@@ -6,13 +6,25 @@ ifeq ($(shell uname),Darwin)
 export CGO_LDFLAGS += -Wl,-no_warn_duplicate_libraries
 endif
 
-.PHONY: build test clean
+.PHONY: build test integration coverage clean
 
 build:
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BINARY) ./cmd/nova/
+ifeq ($(shell uname),Darwin)
+	codesign --entitlements entitlements.plist --force -s - $(BINARY)
+endif
 
 test:
 	go test ./...
 
+integration: build
+	go test -tags integration -timeout 300s -v -count=1 ./...
+
+coverage:
+	go test ./... -coverprofile=coverage.out
+	go tool cover -func=coverage.out | tail -1
+	@echo "---"
+	@go tool cover -func=coverage.out | grep -v "100.0%" | grep -v "0.0%" | sort -t'%' -k2 -n | head -20
+
 clean:
-	rm -f $(BINARY)
+	rm -f $(BINARY) coverage.out

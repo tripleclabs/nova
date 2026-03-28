@@ -23,9 +23,10 @@ type VMConfig struct {
 	Arch       string        // Guest architecture: "amd64", "arm64", or "host" (default).
 	CPUs       uint
 	MemoryMB   uint64
-	DiskPath   string        // Path to the overlay qcow2 disk.
+	DiskPath   string        // Path to the overlay disk (raw on macOS, qcow2 on Linux).
 	CIDATAPath string        // Path to cloud-init ISO (optional).
 	LogPath    string        // Path for serial console log output.
+	MachineDir string        // Path to the machine state directory (for EFI NVRAM, etc).
 	Network    NetworkConfig
 	Shares     []ShareConfig
 }

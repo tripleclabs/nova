@@ -125,8 +125,18 @@ func (e *vzEngine) GuestIP() (string, error) {
 }
 
 func (e *vzEngine) buildVZConfig(cfg VMConfig) (*vz.VirtualMachineConfiguration, error) {
+	// EFI variable store — required for UEFI boot (persists NVRAM).
+	nvramPath := cfg.LogPath // fallback
+	if cfg.MachineDir != "" {
+		nvramPath = cfg.MachineDir + "/efi-variable-store"
+	}
+	efiVarStore, err := vz.NewEFIVariableStore(nvramPath, vz.WithCreatingEFIVariableStore())
+	if err != nil {
+		return nil, fmt.Errorf("creating EFI variable store: %w", err)
+	}
+
 	// Boot loader — EFI for full UEFI disk boot.
-	efi, err := vz.NewEFIBootLoader()
+	efi, err := vz.NewEFIBootLoader(vz.WithEFIVariableStore(efiVarStore))
 	if err != nil {
 		return nil, fmt.Errorf("creating EFI boot loader: %w", err)
 	}

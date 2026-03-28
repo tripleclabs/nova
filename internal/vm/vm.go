@@ -156,6 +156,17 @@ func (o *Orchestrator) upNode(
 		return fmt.Errorf("creating disk overlay: %w", err)
 	}
 
+	// Apple Virtualization.framework requires raw disk images.
+	if runtime.GOOS == "darwin" {
+		slog.Info("converting overlay to raw for VZ framework")
+		rawPath, err := image.ConvertToRaw(overlayPath)
+		if err != nil {
+			o.store.Delete(machineID)
+			return fmt.Errorf("converting to raw: %w", err)
+		}
+		overlayPath = rawPath
+	}
+
 	// Generate SSH keypair.
 	sshDir := filepath.Join(machineDir, "ssh")
 	keyPair, err := cloudinit.GenerateSSHKeyPair(sshDir)
@@ -214,6 +225,7 @@ func (o *Orchestrator) upNode(
 		DiskPath:   overlayPath,
 		CIDATAPath: cidataPath,
 		LogPath:    filepath.Join(machineDir, "console.log"),
+		MachineDir: machineDir,
 	}
 
 	for _, pf := range node.PortForwards {

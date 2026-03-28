@@ -83,3 +83,28 @@ func CreateOverlay(baseImage, machineDir string) (string, error) {
 
 	return overlayPath, nil
 }
+
+// ConvertToRaw converts a qcow2 disk image to raw format. Required for Apple
+// Virtualization.framework which only supports raw disk images. The source
+// qcow2 is removed after successful conversion.
+func ConvertToRaw(qcow2Path string) (string, error) {
+	rawPath := strings.TrimSuffix(qcow2Path, ".qcow2") + ".raw"
+
+	cmd := exec.Command("qemu-img", "convert",
+		"-f", "qcow2",
+		"-O", "raw",
+		qcow2Path,
+		rawPath,
+	)
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("qemu-img convert to raw: %s: %w", strings.TrimSpace(stderr.String()), err)
+	}
+
+	// Remove the qcow2 source to save space.
+	os.Remove(qcow2Path)
+
+	return rawPath, nil
+}
