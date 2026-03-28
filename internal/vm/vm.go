@@ -23,6 +23,7 @@ import (
 	"github.com/3clabs/nova/internal/hypervisor"
 	"github.com/3clabs/nova/internal/image"
 	"github.com/3clabs/nova/internal/network"
+	"github.com/3clabs/nova/internal/provisioner"
 	"github.com/3clabs/nova/internal/state"
 )
 
@@ -207,6 +208,16 @@ func (o *Orchestrator) upNode(
 		Rosetta:       needsRosetta,
 		OS:            imageOS,
 	}
+	// Inject extra user if configured.
+	if node.User != nil {
+		ciCfg.ExtraUser = &cloudinit.UserConfig{
+			Name:         node.User.Name,
+			SSHKey:       node.User.SSHKey,
+			PasswordHash: node.User.PasswordHash,
+			Groups:       node.User.Groups,
+			Shell:        node.User.Shell,
+		}
+	}
 	// Inject shared folder mounts into cloud-init.
 	// Use 9p on Linux (QEMU) and virtiofs on macOS (Apple Virtualization.framework).
 	mountType := "virtiofs"
@@ -303,7 +314,52 @@ func (o *Orchestrator) upNode(
 		return err
 	}
 
+	// Write the shell user (for nova shell) — defaults to "nova" unless a user block overrides.
+	shellUser := "nova"
+	if node.User != nil {
+		shellUser = node.User.Name
+	}
+	os.WriteFile(filepath.Join(machineDir, "shell_user"), []byte(shellUser), 0644)
+
 	fmt.Printf("%q is running.\n", node.Name)
+
+	// Run provisioners if any are defined.
+	if len(node.Provisioners) > 0 {
+		fmt.Printf("[%s] Waiting for SSH before provisioning...\n", node.Name)
+		if err := o.WaitReady(ctx, machineID); err != nil {
+			return fmt.Errorf("waiting for SSH: %w", err)
+		}
+
+		// Read the SSH private key for the provisioner.
+		keyData, err := os.ReadFile(filepath.Join(machineDir, "ssh", "nova_ed25519"))
+		if err != nil {
+			return fmt.Errorf("reading SSH key for provisioner: %w", err)
+		}
+
+		guestIP, err := hv.GuestIP()
+		if err != nil {
+			return fmt.Errorf("getting guest IP for provisioner: %w", err)
+		}
+
+		sshCfg := provisioner.SSHConfig{
+			Host:       guestIP,
+			Port:       "22",
+			User:       "nova",
+			PrivateKey: keyData,
+		}
+
+		output := &provisioner.OutputWriter{
+			Prefix: node.Name,
+			Writer: os.Stdout,
+		}
+
+		fmt.Printf("[%s] Running %d provisioner(s)...\n", node.Name, len(node.Provisioners))
+		if err := provisioner.RunAll(ctx, sshCfg, node.Provisioners, output); err != nil {
+			return fmt.Errorf("provisioning: %w", err)
+		}
+		fmt.Printf("[%s] Provisioning complete.\n", node.Name)
+	}
+
 	return nil
 }
 

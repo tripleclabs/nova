@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -220,6 +221,45 @@ func (s *Server) LinkStatus(ctx context.Context, _ *emptypb.Empty) (*pb.LinkStat
 		})
 	}
 	return resp, nil
+}
+
+// --- Export ---
+
+func (s *Server) Export(ctx context.Context, req *pb.ExportRequest) (*pb.ExportResponse, error) {
+	format, err := vm.ParseExportFormat(req.Format)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+
+	// Check if a user block was configured by reading the shell_user file.
+	nodeName := req.Name
+	if nodeName == "" {
+		nodeName = "default"
+	}
+	hasUser := false
+	if data, err := os.ReadFile(filepath.Join(s.stateDir, "machines", nodeName, "shell_user")); err == nil {
+		hasUser = strings.TrimSpace(string(data)) != "nova"
+	}
+
+	opts := vm.ExportOptions{
+		Format:        format,
+		OutputPath:    req.OutputPath,
+		NoClean:       req.NoClean,
+		ZeroFreeSpace: req.ZeroFreeSpace,
+		SnapshotName:  req.SnapshotName,
+		HasUser:       hasUser,
+	}
+
+	result, err := s.orch.Export(ctx, req.Name, opts)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+
+	return &pb.ExportResponse{
+		OutputPath: result.OutputPath,
+		Format:     string(result.Format),
+		SizeBytes:  result.SizeBytes,
+	}, nil
 }
 
 // --- Snapshots ---

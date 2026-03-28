@@ -3,9 +3,12 @@
 package snapshot
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -295,10 +298,143 @@ func runQemuImg(args ...string) error {
 	return nil
 }
 
+// Export packs a snapshot and writes it as a gzipped tar archive to outputPath.
+// The archive can be transferred to another machine and imported with Import().
+func (m *Manager) Export(name, outputPath string) error {
+	// Pack the snapshot into standalone files first.
+	packDir, err := m.Pack(name)
+	if err != nil {
+		return fmt.Errorf("packing snapshot: %w", err)
+	}
+	defer os.RemoveAll(packDir)
+
+	// Create the output tar.gz.
+	outFile, err := os.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("creating output file: %w", err)
+	}
+	defer outFile.Close()
+
+	gw := gzip.NewWriter(outFile)
+	defer gw.Close()
+
+	tw := tar.NewWriter(gw)
+	defer tw.Close()
+
+	// Walk the pack directory and add all files.
+	return filepath.Walk(packDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == packDir {
+			return nil // skip root dir itself
+		}
+
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return fmt.Errorf("creating tar header for %s: %w", path, err)
+		}
+		// Use relative path within the archive.
+		relPath, _ := filepath.Rel(packDir, path)
+		header.Name = relPath
+
+		if err := tw.WriteHeader(header); err != nil {
+			return fmt.Errorf("writing tar header: %w", err)
+		}
+
+		if info.IsDir() {
+			return nil
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		_, err = io.Copy(tw, f)
+		return err
+	})
+}
+
+// Import reads a gzipped tar archive produced by Export(), extracts it to a
+// temporary directory, and unpacks the snapshot into the local store.
+func (m *Manager) Import(archivePath string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("opening archive: %w", err)
+	}
+	defer f.Close()
+
+	gr, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("reading gzip: %w", err)
+	}
+	defer gr.Close()
+
+	// Extract to a temp directory.
+	tmpDir, err := os.MkdirTemp("", "nova-snap-import-*")
+	if err != nil {
+		return fmt.Errorf("creating temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tr := tar.NewReader(gr)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("reading tar: %w", err)
+		}
+
+		// Sanitize path to prevent directory traversal.
+		target := filepath.Join(tmpDir, filepath.Clean(header.Name))
+		if !strings.HasPrefix(target, tmpDir) {
+			return fmt.Errorf("invalid tar entry path: %s", header.Name)
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			out, err := os.Create(target)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				out.Close()
+				return err
+			}
+			out.Close()
+		}
+	}
+
+	// Unpack into the store using the existing infrastructure.
+	return m.Unpack(tmpDir)
+}
+
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+	srcFile, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0644)
+	defer srcFile.Close()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return err
+	}
+	return dstFile.Close()
 }

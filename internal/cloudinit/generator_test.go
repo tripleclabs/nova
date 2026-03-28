@@ -453,6 +453,84 @@ func TestGenerate_EmptyAuthorizedKey(t *testing.T) {
 	}
 }
 
+func TestGenerate_WithExtraUser(t *testing.T) {
+	out, err := Generate(GeneratorConfig{
+		Hostname:      "user-vm",
+		AuthorizedKey: "ssh-ed25519 AAAA... nova@host",
+		ExtraUser: &UserConfig{
+			Name:   "deploy",
+			SSHKey: "ssh-ed25519 BBBB... deploy@host",
+			Groups: []string{"sudo", "docker"},
+			Shell:  "/bin/zsh",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	s := string(out)
+	// Nova user should still be present.
+	if !strings.Contains(s, "name: nova") {
+		t.Error("should contain nova user")
+	}
+	// Extra user should be present.
+	if !strings.Contains(s, "name: deploy") {
+		t.Error("should contain deploy user")
+	}
+	if !strings.Contains(s, "ssh-ed25519 BBBB") {
+		t.Error("should contain deploy user's SSH key")
+	}
+	if !strings.Contains(s, "/bin/zsh") {
+		t.Error("should contain deploy user's shell")
+	}
+	if !strings.Contains(s, "docker") {
+		t.Error("should contain deploy user's groups")
+	}
+}
+
+func TestGenerate_ExtraUserWithPasswordHash(t *testing.T) {
+	out, err := Generate(GeneratorConfig{
+		Hostname:      "pass-vm",
+		AuthorizedKey: "ssh-ed25519 AAAA...",
+		ExtraUser: &UserConfig{
+			Name:         "admin",
+			PasswordHash: "$6$rounds=4096$salt$hash",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	s := string(out)
+	if !strings.Contains(s, "name: admin") {
+		t.Error("should contain admin user")
+	}
+	if !strings.Contains(s, "$6$rounds") {
+		t.Error("should contain password hash")
+	}
+}
+
+func TestGenerate_ExtraUserDefaultShell(t *testing.T) {
+	out, err := Generate(GeneratorConfig{
+		Hostname:      "shell-vm",
+		AuthorizedKey: "ssh-ed25519 AAAA...",
+		ExtraUser: &UserConfig{
+			Name:   "deploy",
+			SSHKey: "ssh-ed25519 KEY...",
+			// Shell not set — should use distro default.
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	s := string(out)
+	// Should get the default shell (bash for generic profile).
+	if !strings.Contains(s, "/bin/bash") {
+		t.Error("extra user should get default shell when not specified")
+	}
+}
+
 func TestGenerate_InvalidUserConfigYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yaml")

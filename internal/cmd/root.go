@@ -44,6 +44,7 @@ func NewRootCmd(version string) *cobra.Command {
 		newStatusCmd(),
 		newDestroyCmd(),
 		newShellCmd(),
+		newExportCmd(),
 		newLinkCmd(),
 		newMonitorCmd(),
 		newSnapshotCmd(),

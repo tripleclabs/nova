@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
@@ -16,12 +17,14 @@ import (
 // It supports both single-VM mode (a single "vm" block) and multi-node mode
 // (one or more "node" blocks). If both are present, parsing returns an error.
 type Config struct {
-	Variables []Variable `hcl:"variable,block"`
-	VM        *VM        `hcl:"vm,block"`
-	Defaults  *Defaults  `hcl:"defaults,block"`
-	Nodes     []Node     `hcl:"node,block"`
-	Network   *Network   `hcl:"network,block"`
-	Links     []Link     `hcl:"link,block"`
+	Variables    []Variable    `hcl:"variable,block"`
+	VM           *VM           `hcl:"vm,block"`
+	Defaults     *Defaults     `hcl:"defaults,block"`
+	Nodes        []Node        `hcl:"node,block"`
+	Network      *Network      `hcl:"network,block"`
+	Links        []Link        `hcl:"link,block"`
+	Provisioners []Provisioner `hcl:"provisioner,block"`
+	User         *User         `hcl:"user,block"`
 }
 
 // Link defines declarative network conditions between two nodes.
@@ -48,6 +51,26 @@ type Defaults struct {
 	Arch   string `hcl:"arch,optional"`
 }
 
+// Provisioner describes a provisioning step to run after VM boot.
+// The label must be "shell" (the only supported provisioner type for now).
+type Provisioner struct {
+	Type    string            `hcl:"type,label"`
+	Script  string            `hcl:"script,optional"`
+	Inline  []string          `hcl:"inline,optional"`
+	Timeout string            `hcl:"timeout,optional"`
+	Env     map[string]string `hcl:"env,optional"`
+}
+
+// User describes a non-Nova user to be created in the VM.
+// At least one of SSHKey or PasswordHash must be provided.
+type User struct {
+	Name         string   `hcl:"name"`
+	SSHKey       string   `hcl:"ssh_key,optional"`
+	PasswordHash string   `hcl:"password_hash,optional"`
+	Groups       []string `hcl:"groups,optional"`
+	Shell        string   `hcl:"shell,optional"`
+}
+
 // VM describes a single virtual machine (single-VM mode).
 type VM struct {
 	Name          string         `hcl:"name,optional"`
@@ -57,6 +80,8 @@ type VM struct {
 	Arch          string         `hcl:"arch,optional"`
 	PortForwards  []PortForward  `hcl:"port_forward,block"`
 	SharedFolders []SharedFolder `hcl:"shared_folder,block"`
+	Provisioners  []Provisioner  `hcl:"provisioner,block"`
+	User          *User          `hcl:"user,block"`
 }
 
 // Node describes a single node in a multi-node configuration.
@@ -69,6 +94,8 @@ type Node struct {
 	IP            string         `hcl:"ip,optional"`
 	PortForwards  []PortForward  `hcl:"port_forward,block"`
 	SharedFolders []SharedFolder `hcl:"shared_folder,block"`
+	Provisioners  []Provisioner  `hcl:"provisioner,block"`
+	User          *User          `hcl:"user,block"`
 }
 
 // Network configures the virtual network for multi-node clusters.
@@ -101,6 +128,8 @@ type ResolvedNode struct {
 	IP            string
 	PortForwards  []PortForward
 	SharedFolders []SharedFolder
+	Provisioners  []Provisioner
+	User          *User
 }
 
 // Load parses an HCL file at the given path, resolves variables, and returns a validated Config.
@@ -144,10 +173,34 @@ func Parse(src []byte, filename string) (*Config, error) {
 		return nil, fmt.Errorf("cannot use both 'vm' and 'node' blocks in the same file")
 	}
 
+	// Validate top-level provisioners.
+	for i, p := range cfg.Provisioners {
+		if err := validateProvisioner(p); err != nil {
+			return nil, fmt.Errorf("provisioner[%d]: %w", i, err)
+		}
+	}
+
+	// Validate top-level user.
+	if cfg.User != nil {
+		if err := validateUser(cfg.User); err != nil {
+			return nil, fmt.Errorf("user: %w", err)
+		}
+	}
+
 	if cfg.VM != nil {
 		applyVMDefaults(cfg.VM)
 		if err := validateVM(cfg.VM); err != nil {
 			return nil, err
+		}
+		for i, p := range cfg.VM.Provisioners {
+			if err := validateProvisioner(p); err != nil {
+				return nil, fmt.Errorf("vm.provisioner[%d]: %w", i, err)
+			}
+		}
+		if cfg.VM.User != nil {
+			if err := validateUser(cfg.VM.User); err != nil {
+				return nil, fmt.Errorf("vm.user: %w", err)
+			}
 		}
 	}
 
@@ -173,6 +226,8 @@ func (c *Config) ResolveNodes() []ResolvedNode {
 		if name == "" {
 			name = "default"
 		}
+		provs := mergeProvisioners(c.Provisioners, c.VM.Provisioners)
+		user := resolveUser(c.User, c.VM.User)
 		return []ResolvedNode{{
 			Name:          name,
 			Image:         c.VM.Image,
@@ -181,11 +236,15 @@ func (c *Config) ResolveNodes() []ResolvedNode {
 			Arch:          c.VM.Arch,
 			PortForwards:  c.VM.PortForwards,
 			SharedFolders: c.VM.SharedFolders,
+			Provisioners:  provs,
+			User:          user,
 		}}
 	}
 
 	nodes := make([]ResolvedNode, len(c.Nodes))
 	for i, n := range c.Nodes {
+		provs := mergeProvisioners(c.Provisioners, n.Provisioners)
+		user := resolveUser(c.User, n.User)
 		nodes[i] = ResolvedNode{
 			Name:          n.Name,
 			Image:         n.Image,
@@ -195,6 +254,8 @@ func (c *Config) ResolveNodes() []ResolvedNode {
 			IP:            n.IP,
 			PortForwards:  n.PortForwards,
 			SharedFolders: n.SharedFolders,
+			Provisioners:  provs,
+			User:          user,
 		}
 	}
 	return nodes
@@ -332,6 +393,18 @@ func applyAndValidateNodes(cfg *Config) error {
 		if err := validateVM(vm); err != nil {
 			return fmt.Errorf("node %q: %w", n.Name, err)
 		}
+
+		for j, p := range n.Provisioners {
+			if err := validateProvisioner(p); err != nil {
+				return fmt.Errorf("node %q: provisioner[%d]: %w", n.Name, j, err)
+			}
+		}
+
+		if n.User != nil {
+			if err := validateUser(n.User); err != nil {
+				return fmt.Errorf("node %q: user: %w", n.Name, err)
+			}
+		}
 	}
 
 	return nil
@@ -374,6 +447,75 @@ func validateVM(vm *VM) error {
 	}
 
 	return nil
+}
+
+func validateProvisioner(p Provisioner) error {
+	if p.Type != "shell" {
+		return fmt.Errorf("unsupported provisioner type %q (only \"shell\" is supported)", p.Type)
+	}
+	hasScript := p.Script != ""
+	hasInline := len(p.Inline) > 0
+	if !hasScript && !hasInline {
+		return fmt.Errorf("provisioner must specify either \"script\" or \"inline\"")
+	}
+	if hasScript && hasInline {
+		return fmt.Errorf("provisioner cannot specify both \"script\" and \"inline\"")
+	}
+	if p.Timeout != "" {
+		if _, err := parseDuration(p.Timeout); err != nil {
+			return fmt.Errorf("invalid timeout %q: %w", p.Timeout, err)
+		}
+	}
+	return nil
+}
+
+func validateUser(u *User) error {
+	if u.Name == "" {
+		return fmt.Errorf("user name is required")
+	}
+	if u.Name == "nova" {
+		return fmt.Errorf("user name \"nova\" is reserved for internal use")
+	}
+	if u.Name == "root" {
+		return fmt.Errorf("user name \"root\" is not allowed")
+	}
+	if u.SSHKey == "" && u.PasswordHash == "" {
+		return fmt.Errorf("user must have at least one of ssh_key or password_hash")
+	}
+	if u.PasswordHash != "" && !looksLikeCryptHash(u.PasswordHash) {
+		return fmt.Errorf("password_hash does not look like a crypt(3) hash — use mkpasswd to generate one, not a plaintext password")
+	}
+	return nil
+}
+
+// looksLikeCryptHash checks whether a string looks like a crypt(3) password hash
+// (e.g. $6$rounds=...$... or $y$...). This catches plaintext passwords.
+func looksLikeCryptHash(s string) bool {
+	return strings.HasPrefix(s, "$") && strings.Count(s, "$") >= 3
+}
+
+// resolveUser returns the effective user for a node: node-level overrides top-level entirely.
+func resolveUser(topLevel, scopeLevel *User) *User {
+	if scopeLevel != nil {
+		return scopeLevel
+	}
+	return topLevel
+}
+
+// mergeProvisioners returns top-level provisioners followed by scope-level provisioners.
+func mergeProvisioners(top, scope []Provisioner) []Provisioner {
+	if len(top) == 0 && len(scope) == 0 {
+		return nil
+	}
+	merged := make([]Provisioner, 0, len(top)+len(scope))
+	merged = append(merged, top...)
+	merged = append(merged, scope...)
+	return merged
+}
+
+// parseDuration parses a human-friendly duration like "5m", "30s", "1h".
+func parseDuration(s string) (time.Duration, error) {
+	return time.ParseDuration(s)
 }
 
 func validateMemory(mem string) error {

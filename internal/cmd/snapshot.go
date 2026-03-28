@@ -43,6 +43,8 @@ func newSnapshotCmd() *cobra.Command {
 			Args:  cobra.ExactArgs(1),
 			RunE:  runSnapshotDelete,
 		},
+		newSnapshotExportCmd(),
+		newSnapshotImportCmd(),
 		&cobra.Command{
 			Use:   "push <name> <ref>",
 			Short: "Push a snapshot to an OCI registry",
@@ -186,5 +188,83 @@ func runSnapshotPull(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Snapshot pulled and imported from %s\n", ref)
+	return nil
+}
+
+var snapExportOutput string
+
+func newSnapshotExportCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "export <name>",
+		Short: "Export a snapshot as a portable archive file",
+		Long: `Packs a saved snapshot into a single .novasnap file that can be
+transferred to another machine and imported with 'nova snapshot import'.
+
+This is useful for sharing VM environments without needing a registry.
+
+Example:
+  nova snapshot save my-env
+  nova snapshot export my-env -o my-env.novasnap
+  # scp my-env.novasnap to colleague
+  # colleague runs: nova snapshot import my-env.novasnap`,
+		Args: cobra.ExactArgs(1),
+		RunE: runSnapshotExport,
+	}
+	cmd.Flags().StringVarP(&snapExportOutput, "output", "o", "", "output file path (default: ./<name>.novasnap)")
+	return cmd
+}
+
+func newSnapshotImportCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "import <file>",
+		Short: "Import a snapshot from a portable archive file",
+		Long: `Imports a .novasnap archive produced by 'nova snapshot export'.
+After importing, use 'nova snapshot restore <name>' to load the VMs,
+then 'nova up' to boot them.`,
+		Args: cobra.ExactArgs(1),
+		RunE: runSnapshotImport,
+	}
+}
+
+func runSnapshotExport(cmd *cobra.Command, args []string) error {
+	name := args[0]
+
+	mgr, err := snapManager()
+	if err != nil {
+		return err
+	}
+
+	outputPath := snapExportOutput
+	if outputPath == "" {
+		outputPath = name + ".novasnap"
+	}
+
+	fmt.Printf("Exporting snapshot %q to %s...\n", name, outputPath)
+	if err := mgr.Export(name, outputPath); err != nil {
+		return err
+	}
+
+	fi, err := os.Stat(outputPath)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Exported %s (%s)\n", outputPath, humanBytes(fi.Size()))
+	return nil
+}
+
+func runSnapshotImport(cmd *cobra.Command, args []string) error {
+	archivePath := args[0]
+
+	mgr, err := snapManager()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Importing snapshot from %s...\n", archivePath)
+	if err := mgr.Import(archivePath); err != nil {
+		return err
+	}
+
+	fmt.Printf("Snapshot imported. Use 'nova snapshot list' to see it, then 'nova snapshot restore <name>' + 'nova up'.\n")
 	return nil
 }

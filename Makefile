@@ -6,7 +6,7 @@ ifeq ($(shell uname),Darwin)
 export CGO_LDFLAGS += -Wl,-no_warn_duplicate_libraries
 endif
 
-.PHONY: build test integration coverage clean
+.PHONY: build test integration coverage proto clean
 
 build:
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BINARY) ./cmd/nova/
@@ -25,6 +25,14 @@ coverage:
 	go tool cover -func=coverage.out | tail -1
 	@echo "---"
 	@go tool cover -func=coverage.out | grep -v "100.0%" | grep -v "0.0%" | sort -t'%' -k2 -n | head -20
+
+proto:
+	protoc \
+		--proto_path=proto \
+		--proto_path=$$(brew --prefix protobuf)/include \
+		--go_out=pkg/novapb --go_opt=paths=source_relative \
+		--go-grpc_out=pkg/novapb --go-grpc_opt=paths=source_relative \
+		nova/v1/nova.proto
 
 clean:
 	rm -f $(BINARY) coverage.out

@@ -565,6 +565,115 @@ func TestNewManagerCreatesDir(t *testing.T) {
 	}
 }
 
+func TestExportImportRoundTrip(t *testing.T) {
+	mgr, _, _ := setupTestEnv(t)
+
+	if err := mgr.Save("export-test"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Export to a tar.gz file.
+	archivePath := filepath.Join(t.TempDir(), "export-test.novasnap")
+	if err := mgr.Export("export-test", archivePath); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	// Verify archive was created and is non-empty.
+	fi, err := os.Stat(archivePath)
+	if err != nil {
+		t.Fatalf("archive should exist: %v", err)
+	}
+	if fi.Size() == 0 {
+		t.Fatal("archive should be non-empty")
+	}
+
+	// Import into a fresh environment.
+	freshDir := t.TempDir()
+	freshStore, _ := state.NewStore(freshDir)
+	freshMgr, _ := NewManager(freshStore, freshDir)
+
+	if err := freshMgr.Import(archivePath); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	// Verify the snapshot was imported.
+	snaps, err := freshMgr.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(snaps) != 1 {
+		t.Fatalf("imported snapshots = %d, want 1", len(snaps))
+	}
+	if snaps[0].Name != "export-test" {
+		t.Errorf("imported snapshot name = %q, want export-test", snaps[0].Name)
+	}
+
+	// Verify the machine was recreated.
+	machines, _ := freshStore.List()
+	if len(machines) != 1 {
+		t.Fatalf("machines after import = %d, want 1", len(machines))
+	}
+	if machines[0].ID != "test-vm" {
+		t.Errorf("machine ID = %q, want test-vm", machines[0].ID)
+	}
+
+	// Verify the disk exists.
+	diskPath := filepath.Join(freshStore.MachineDir("test-vm"), "disk.qcow2")
+	if _, err := os.Stat(diskPath); err != nil {
+		t.Error("disk should exist after import")
+	}
+}
+
+func TestExportNonExistentSnapshot(t *testing.T) {
+	mgr, _, _ := setupTestEnv(t)
+
+	archivePath := filepath.Join(t.TempDir(), "nope.novasnap")
+	if err := mgr.Export("nope", archivePath); err == nil {
+		t.Fatal("expected error for non-existent snapshot")
+	}
+}
+
+func TestImportInvalidArchive(t *testing.T) {
+	novaDir := t.TempDir()
+	store, _ := state.NewStore(novaDir)
+	mgr, _ := NewManager(store, novaDir)
+
+	// Create a file that is not a valid gzip archive.
+	badPath := filepath.Join(t.TempDir(), "bad.novasnap")
+	os.WriteFile(badPath, []byte("not a tar.gz"), 0644)
+
+	if err := mgr.Import(badPath); err == nil {
+		t.Fatal("expected error for invalid archive")
+	}
+}
+
+func TestExportMultipleMachines(t *testing.T) {
+	mgr, _, _ := setupTestEnvMulti(t, 3)
+
+	if err := mgr.Save("multi-export"); err != nil {
+		t.Fatal(err)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "multi.novasnap")
+	if err := mgr.Export("multi-export", archivePath); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	// Import and verify all 3 machines come through.
+	freshDir := t.TempDir()
+	freshStore, _ := state.NewStore(freshDir)
+	freshMgr, _ := NewManager(freshStore, freshDir)
+
+	if err := freshMgr.Import(archivePath); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	machines, _ := freshStore.List()
+	if len(machines) != 3 {
+		t.Fatalf("machines after import = %d, want 3", len(machines))
+	}
+}
+
 func TestListIgnoresNonJSON(t *testing.T) {
 	novaDir := t.TempDir()
 	store, _ := state.NewStore(novaDir)

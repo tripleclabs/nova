@@ -25,6 +25,15 @@ type HostEntry struct {
 	Hostname string
 }
 
+// UserConfig describes a non-Nova user to create via cloud-init.
+type UserConfig struct {
+	Name         string
+	SSHKey       string
+	PasswordHash string
+	Groups       []string
+	Shell        string
+}
+
 // GeneratorConfig holds the inputs for generating a merged cloud-config.
 type GeneratorConfig struct {
 	Hostname      string
@@ -34,6 +43,7 @@ type GeneratorConfig struct {
 	Hosts         []HostEntry   // /etc/hosts entries for multi-node clusters.
 	Rosetta       bool          // Enable Rosetta 2 binfmt_misc registration in the guest.
 	OS            string        // OS identifier (e.g. "ubuntu", "alpine"); empty = generic defaults.
+	ExtraUser     *UserConfig   // Optional non-Nova user to create alongside the internal nova user.
 }
 
 // Generate merges Nova's required defaults with a user-provided cloud-config.
@@ -53,18 +63,48 @@ func Generate(cfg GeneratorConfig) ([]byte, error) {
 		novaUser["sudo"] = profile.SudoLine
 	}
 
+	users := []any{
+		novaUser,
+		map[string]any{
+			"name":                "root",
+			"ssh_authorized_keys": []any{cfg.AuthorizedKey},
+		},
+	}
+
+	// Add configured extra user if present.
+	if cfg.ExtraUser != nil {
+		extraUser := map[string]any{
+			"name":        cfg.ExtraUser.Name,
+			"lock_passwd": true,
+		}
+		shell := cfg.ExtraUser.Shell
+		if shell == "" {
+			shell = profile.Shell
+		}
+		extraUser["shell"] = shell
+
+		if cfg.ExtraUser.SSHKey != "" {
+			extraUser["ssh_authorized_keys"] = []any{cfg.ExtraUser.SSHKey}
+		}
+		if cfg.ExtraUser.PasswordHash != "" {
+			extraUser["passwd"] = cfg.ExtraUser.PasswordHash
+			extraUser["lock_passwd"] = false
+		}
+		if len(cfg.ExtraUser.Groups) > 0 {
+			extraUser["groups"] = cfg.ExtraUser.Groups
+		}
+		if profile.SudoLine != "" {
+			extraUser["sudo"] = profile.SudoLine
+		}
+		users = append(users, extraUser)
+	}
+
 	defaults := CloudConfig{
 		"hostname":         cfg.Hostname,
 		"manage_etc_hosts": true,
 		"ssh_pwauth":       false,
 		"disable_root":     false,
-		"users": []any{
-			novaUser,
-			map[string]any{
-				"name":                "root",
-				"ssh_authorized_keys": []any{cfg.AuthorizedKey},
-			},
-		},
+		"users":            users,
 	}
 
 	// Accumulate write_files entries.

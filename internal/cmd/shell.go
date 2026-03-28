@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	pb "github.com/3clabs/nova/pkg/novapb/nova/v1"
@@ -71,12 +72,19 @@ func runShell(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	keyPath := filepath.Join(novaStateDir(), "machines", name, "ssh", "nova_ed25519")
+	machineDir := filepath.Join(novaStateDir(), "machines", name)
+	keyPath := filepath.Join(machineDir, "ssh", "nova_ed25519")
 	if _, err := os.Stat(keyPath); err != nil {
 		return fmt.Errorf("SSH key not found at %s", keyPath)
 	}
 
-	return sshInteractive(guestIP, "22", "nova", keyPath)
+	// Use configured user if present, otherwise default to "nova".
+	sshUser := "nova"
+	if data, err := os.ReadFile(filepath.Join(machineDir, "shell_user")); err == nil {
+		sshUser = strings.TrimSpace(string(data))
+	}
+
+	return sshInteractive(guestIP, "22", sshUser, keyPath)
 }
 
 // sshInteractive launches an interactive SSH session with a PTY.
