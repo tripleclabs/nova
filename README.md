@@ -47,19 +47,29 @@ nova down
   - macOS: `brew install qemu`
   - Linux: `apt install qemu-utils` or `dnf install qemu-img`
 
-### Build from source
+### Linux
 
 ```bash
-git clone https://github.com/tripleclabs/nova.git
-cd nova
-make build
+go install github.com/3clabs/nova/cmd/nova@latest
 ```
 
-This compiles the binary and (on macOS) codesigns it with the virtualization entitlement. Move it somewhere on your PATH:
+### macOS
+
+macOS requires the `com.apple.security.virtualization` entitlement to use Virtualization.framework. Install and codesign in one block:
 
 ```bash
-sudo mv nova /usr/local/bin/
+go install github.com/3clabs/nova/cmd/nova@latest
+codesign --force -s - --entitlements <(cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>com.apple.security.virtualization</key><true/>
+</dict></plist>
+EOF
+) $(go env GOPATH)/bin/nova
 ```
+
+The binary lands in `$GOPATH/bin/nova` (usually `~/go/bin/nova`). Make sure that's on your `$PATH`.
 
 ### Shell completions
 
@@ -73,11 +83,6 @@ nova completion zsh > "${fpath[1]}/_nova"
 # fish
 nova completion fish > ~/.config/fish/completions/nova.fish
 ```
-
-<!-- ### Homebrew (coming soon)
-```bash
-brew install tripleclabs/tap/nova
-``` -->
 
 ## Images
 
