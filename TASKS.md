@@ -217,9 +217,13 @@
 - [x] 7 arch tests: host detection, normalization, aliases, emulation detection
 - [x] 2 cloud-init Rosetta tests: standalone and combined with mounts
 
-### 8.3 Wasm Plugin System
-- [ ] Integrate `wazero` as the Wasm runtime
-- [ ] Define plugin API: host functions exposed to Wasm guests (DNS hooks, event hooks, TUI widgets)
-- [ ] Implement plugin discovery and loading from `~/.nova/plugins/`
-- [ ] Build an example plugin (e.g., custom DNS resolver)
-- [ ] Document the plugin authoring guide
+### 8.3 Lua Plugin System
+- [x] Integrate `gopher-lua` as the embedded scripting runtime (pure Go, no CGO)
+- [x] Plugin discovery: auto-loads all `.lua` files from `~/.nova/plugins/`
+- [x] Hook system: `nova.register(hook, fn)` for `dns_resolve`, `on_vm_start`, `on_vm_stop`, `on_snapshot`, `on_link`
+- [x] `CallHook()` returns first non-nil result (DNS), `CallHookAll()` collects all results (events)
+- [x] Built-in host functions: `nova.log()`, `nova.register()`
+- [x] `RegisterHostFunc()` API for app-level extensions (e.g., secret managers)
+- [x] Graceful error handling: bad plugins logged and skipped, hook errors don't crash
+- [x] Example plugins: `dns-resolver.lua` (custom .nova DNS), `secret-injector.lua` (lifecycle hooks)
+- [x] 12 tests: load/skip/bad plugins, DNS hooks, lifecycle events, multi-plugin dispatch, custom host funcs, close

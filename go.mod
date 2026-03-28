@@ -10,6 +10,7 @@ require (
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/kdomanski/iso9660 v0.4.0
 	github.com/spf13/cobra v1.10.2
+	github.com/yuin/gopher-lua v1.1.1
 	github.com/zclconf/go-cty v1.18.0
 	golang.org/x/crypto v0.38.0
 	gopkg.in/yaml.v3 v3.0.1
