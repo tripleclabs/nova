@@ -40,18 +40,44 @@ nova down
 
 ## Installation
 
-### From source
+### Prerequisites
+
+- **Go 1.22+**
+- **qemu-img** — for disk overlays and snapshots
+  - macOS: `brew install qemu`
+  - Linux: `apt install qemu-utils` or `dnf install qemu-img`
+
+### Build from source
 
 ```bash
-git clone https://github.com/3clabs/nova.git
+git clone https://github.com/tripleclabs/nova.git
 cd nova
 make build
-# Binary is at ./nova
 ```
 
-### From releases
+This compiles the binary and (on macOS) codesigns it with the virtualization entitlement. Move it somewhere on your PATH:
 
-Download the latest binary from [GitHub Releases](https://github.com/3clabs/nova/releases) for your platform.
+```bash
+sudo mv nova /usr/local/bin/
+```
+
+### Shell completions
+
+```bash
+# bash
+nova completion bash > /etc/bash_completion.d/nova
+
+# zsh
+nova completion zsh > "${fpath[1]}/_nova"
+
+# fish
+nova completion fish > ~/.config/fish/completions/nova.fish
+```
+
+<!-- ### Homebrew (coming soon)
+```bash
+brew install tripleclabs/tap/nova
+``` -->
 
 ## Images
 
