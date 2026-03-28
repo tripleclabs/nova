@@ -244,6 +244,51 @@ func TestGenerate_DefaultMountTypeIsVirtioFS(t *testing.T) {
 	}
 }
 
+func TestGenerate_Rosetta(t *testing.T) {
+	out, err := Generate(GeneratorConfig{
+		Hostname:      "rosetta-vm",
+		AuthorizedKey: "ssh-ed25519 AAAA...",
+		Rosetta:       true,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	s := string(out)
+	if !strings.Contains(s, "rosetta") {
+		t.Error("should contain rosetta mount command")
+	}
+	if !strings.Contains(s, "update-binfmts") {
+		t.Error("should contain binfmt_misc registration")
+	}
+	if !strings.Contains(s, "/media/rosetta") {
+		t.Error("should contain rosetta mount point")
+	}
+}
+
+func TestGenerate_RosettaWithMounts(t *testing.T) {
+	out, err := Generate(GeneratorConfig{
+		Hostname:      "rosetta-mount-vm",
+		AuthorizedKey: "ssh-ed25519 AAAA...",
+		Rosetta:       true,
+		Mounts: []SharedMount{
+			{Tag: "workspace", GuestPath: "/workspace"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	s := string(out)
+	// Both workspace mount and rosetta commands should be present.
+	if !strings.Contains(s, "mkdir -p /workspace") {
+		t.Error("should contain workspace mkdir")
+	}
+	if !strings.Contains(s, "update-binfmts") {
+		t.Error("should contain rosetta binfmt registration")
+	}
+}
+
 func TestGenerate_MissingUserFile(t *testing.T) {
 	_, err := Generate(GeneratorConfig{
 		Hostname:      "vm",

@@ -20,6 +20,7 @@ const (
 // VMConfig holds all parameters needed to boot a VM.
 type VMConfig struct {
 	Name       string
+	Arch       string        // Guest architecture: "amd64", "arm64", or "host" (default).
 	CPUs       uint
 	MemoryMB   uint64
 	DiskPath   string        // Path to the overlay qcow2 disk.

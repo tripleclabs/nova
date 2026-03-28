@@ -152,11 +152,13 @@ func (o *Orchestrator) upNode(
 	}
 
 	// Build cloud-init config.
+	needsRosetta := runtime.GOOS == "darwin" && hypervisor.NeedsEmulation(node.Arch)
 	ciCfg := cloudinit.GeneratorConfig{
 		Hostname:      node.Name,
 		AuthorizedKey: keyPair.AuthorizedKey,
 		UserDataPath:  userDataPath,
 		Hosts:         hostsEntries,
+		Rosetta:       needsRosetta,
 	}
 	// Inject shared folder mounts into cloud-init.
 	// Use 9p on Linux (QEMU) and virtiofs on macOS (Apple Virtualization.framework).
@@ -193,6 +195,7 @@ func (o *Orchestrator) upNode(
 
 	vmCfg := hypervisor.VMConfig{
 		Name:       node.Name,
+		Arch:       node.Arch,
 		CPUs:       uint(node.CPUs),
 		MemoryMB:   memMB,
 		DiskPath:   overlayPath,

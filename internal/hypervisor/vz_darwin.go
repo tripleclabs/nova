@@ -198,27 +198,62 @@ func (e *vzEngine) buildVZConfig(cfg VMConfig) (*vz.VirtualMachineConfiguration,
 		vzCfg.SetSerialPortsVirtualMachineConfiguration([]*vz.VirtioConsoleDeviceSerialPortConfiguration{serialPort})
 	}
 
-	// Shared folders via VirtioFS.
-	if len(cfg.Shares) > 0 {
-		var fsDirs []vz.DirectorySharingDeviceConfiguration
-		for _, share := range cfg.Shares {
-			sharedDir, err := vz.NewSharedDirectory(share.HostPath, share.ReadOnly)
-			if err != nil {
-				return nil, fmt.Errorf("creating shared directory for %s: %w", share.HostPath, err)
-			}
-			singleShare, err := vz.NewSingleDirectoryShare(sharedDir)
-			if err != nil {
-				return nil, fmt.Errorf("creating directory share: %w", err)
-			}
-			fsConfig, err := vz.NewVirtioFileSystemDeviceConfiguration(share.Tag)
-			if err != nil {
-				return nil, fmt.Errorf("creating VirtioFS device for tag %s: %w", share.Tag, err)
-			}
-			fsConfig.SetDirectoryShare(singleShare)
-			fsDirs = append(fsDirs, fsConfig)
+	// Shared folders via VirtioFS and optional Rosetta translation.
+	var fsDirs []vz.DirectorySharingDeviceConfiguration
+	for _, share := range cfg.Shares {
+		sharedDir, err := vz.NewSharedDirectory(share.HostPath, share.ReadOnly)
+		if err != nil {
+			return nil, fmt.Errorf("creating shared directory for %s: %w", share.HostPath, err)
 		}
+		singleShare, err := vz.NewSingleDirectoryShare(sharedDir)
+		if err != nil {
+			return nil, fmt.Errorf("creating directory share: %w", err)
+		}
+		fsConfig, err := vz.NewVirtioFileSystemDeviceConfiguration(share.Tag)
+		if err != nil {
+			return nil, fmt.Errorf("creating VirtioFS device for tag %s: %w", share.Tag, err)
+		}
+		fsConfig.SetDirectoryShare(singleShare)
+		fsDirs = append(fsDirs, fsConfig)
+	}
+
+	// Rosetta 2 — enable x86_64 binary translation on ARM hosts.
+	if NeedsEmulation(cfg.Arch) && normalizeArch(cfg.Arch) == "amd64" {
+		avail := vz.LinuxRosettaDirectoryShareAvailability()
+		switch avail {
+		case vz.LinuxRosettaAvailabilityNotInstalled:
+			slog.Info("installing Rosetta for Linux binary translation")
+			if err := vz.LinuxRosettaDirectoryShareInstallRosetta(); err != nil {
+				return nil, fmt.Errorf("installing Rosetta: %w", err)
+			}
+			fallthrough
+		case vz.LinuxRosettaAvailabilityInstalled:
+			rosettaShare, err := vz.NewLinuxRosettaDirectoryShare()
+			if err != nil {
+				return nil, fmt.Errorf("creating Rosetta directory share: %w", err)
+			}
+			rosettaFS, err := vz.NewVirtioFileSystemDeviceConfiguration("rosetta")
+			if err != nil {
+				return nil, fmt.Errorf("creating Rosetta VirtioFS device: %w", err)
+			}
+			rosettaFS.SetDirectoryShare(rosettaShare)
+			fsDirs = append(fsDirs, rosettaFS)
+			slog.Info("Rosetta 2 translation enabled for amd64 guest on arm64 host")
+		default:
+			return nil, fmt.Errorf("Rosetta is not supported on this system (availability: %v); cannot run amd64 guest on arm64 host", avail)
+		}
+	}
+
+	if len(fsDirs) > 0 {
 		vzCfg.SetDirectorySharingDevicesVirtualMachineConfiguration(fsDirs)
 	}
+
+	// Platform — use GenericPlatformConfiguration for Linux guests.
+	platform, err := vz.NewGenericPlatformConfiguration()
+	if err != nil {
+		return nil, fmt.Errorf("creating generic platform config: %w", err)
+	}
+	vzCfg.SetPlatformVirtualMachineConfiguration(platform)
 
 	return vzCfg, nil
 }

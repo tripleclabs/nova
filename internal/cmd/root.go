@@ -46,6 +46,7 @@ func NewRootCmd(version string) *cobra.Command {
 		newShellCmd(),
 		newLinkCmd(),
 		newMonitorCmd(),
+		newSnapshotCmd(),
 	)
 
 	return root

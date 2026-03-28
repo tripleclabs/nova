@@ -196,17 +196,26 @@
 ## Phase 8: Advanced Ecosystem & Emulation
 
 ### 8.1 Cluster Snapshots ("Time Travel")
-- [ ] Implement `nova snapshot save <name>` — snapshot all node disks (qcow2 snapshots) + state
-- [ ] Implement `nova snapshot restore <name>` — revert cluster to saved state
-- [ ] Implement `nova snapshot list` and `nova snapshot delete`
-- [ ] Implement `nova snapshot push <name>` — pack and push snapshot to OCI registry
-- [ ] Implement `nova snapshot pull <ref>` — pull and unpack from registry
+- [x] `nova snapshot save <name>` — creates qcow2 internal snapshots for all machines + saves metadata
+- [x] `nova snapshot restore <name>` — reverts all machine disks to saved snapshot via `qemu-img snapshot -a`
+- [x] `nova snapshot list` — tabwriter table of all snapshots with name, machine count, timestamp
+- [x] `nova snapshot delete <name>` — removes internal qcow2 snapshots + metadata file
+- [x] `nova snapshot push <name> <ref>` — packs snapshot (convert each disk to standalone qcow2), pushes as OCI artifact
+- [x] `nova snapshot pull <ref>` — pulls OCI artifact, unpacks into local store, recreates machine records
+- [x] Snapshot name validation (alphanumeric + hyphens/underscores)
+- [x] Rollback on partial save failure
+- [x] `image/oci.go` — `PushDir()` / `PullDir()` for multi-layer OCI push/pull of arbitrary directories
+- [x] 9 tests: save/list, duplicate save, restore, restore non-existent, delete, pack, unpack, name validation, empty cluster
 
 ### 8.2 Cross-Architecture Emulation
-- [ ] Support `arch = "amd64"` on ARM hosts via Rosetta 2 (VZ framework)
-- [ ] Support `arch = "arm64"` on x86 hosts via QEMU TCG
-- [ ] Auto-detect host arch and select acceleration vs emulation path
-- [ ] Test: boot an amd64 image on an arm64 Mac
+- [x] `arch.go` — `HostArch()`, `NeedsEmulation()`, `normalizeArch()` with alias support (x86_64/aarch64)
+- [x] `Arch` field added to `VMConfig`, wired through orchestrator from config
+- [x] macOS/ARM: Rosetta 2 integration in VZ engine — auto-installs if needed, attaches `LinuxRosettaDirectoryShare`
+- [x] Guest-side: cloud-init injects Rosetta VirtioFS mount + `update-binfmts` registration for transparent x86_64 execution
+- [x] `GenericPlatformConfiguration` set on all VZ VMs
+- [x] Linux/QEMU TCG fallback supported via `qemu_linux.go` (from Linux branch)
+- [x] 7 arch tests: host detection, normalization, aliases, emulation detection
+- [x] 2 cloud-init Rosetta tests: standalone and combined with mounts
 
 ### 8.3 Wasm Plugin System
 - [ ] Integrate `wazero` as the Wasm runtime

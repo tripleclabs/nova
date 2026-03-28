@@ -31,6 +31,7 @@ type GeneratorConfig struct {
 	UserDataPath  string        // Path to user-provided cloud-config.yaml (optional).
 	Mounts        []SharedMount // VirtioFS/9p mounts to inject.
 	Hosts         []HostEntry   // /etc/hosts entries for multi-node clusters.
+	Rosetta       bool          // Enable Rosetta 2 binfmt_misc registration in the guest.
 }
 
 // Generate merges Nova's required defaults with a user-provided cloud-config.
@@ -89,6 +90,21 @@ func Generate(cfg GeneratorConfig) ([]byte, error) {
 			"content": hostsContent,
 		})
 		defaults["write_files"] = writeFiles
+	}
+
+	// Rosetta 2 guest-side setup: mount the Rosetta VirtioFS share and
+	// register it with binfmt_misc so x86_64 binaries run transparently.
+	if cfg.Rosetta {
+		rosettaCmds := []any{
+			"mkdir -p /media/rosetta",
+			"mount -t virtiofs rosetta /media/rosetta",
+			"/usr/sbin/update-binfmts --install rosetta /media/rosetta/rosetta --magic '\\x7fELF\\x02\\x01\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x02\\x00\\x3e\\x00' --mask '\\xff\\xff\\xff\\xff\\xff\\xfe\\xfe\\x00\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\xfe\\xff\\xff\\xff' --credentials yes --preserve no --fix-binary yes",
+		}
+		if existing, ok := defaults["runcmd"].([]any); ok {
+			defaults["runcmd"] = append(existing, rosettaCmds...)
+		} else {
+			defaults["runcmd"] = rosettaCmds
+		}
 	}
 
 	// If user provided a cloud-config, merge it.
