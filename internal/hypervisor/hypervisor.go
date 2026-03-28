@@ -72,7 +72,9 @@ func New() (Hypervisor, error) {
 	switch runtime.GOOS {
 	case "darwin":
 		return newVZEngine()
+	case "linux":
+		return newQEMUEngine()
 	default:
-		return nil, fmt.Errorf("unsupported platform: %s (linux QEMU backend not yet implemented)", runtime.GOOS)
+		return nil, fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
 }
