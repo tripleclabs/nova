@@ -11,11 +11,18 @@ import (
 // We use map-based merging to preserve arbitrary user fields.
 type CloudConfig map[string]any
 
+// SharedMount describes a VirtioFS/9p mount to inject into the guest.
+type SharedMount struct {
+	Tag        string // VirtioFS tag or 9p mount tag.
+	GuestPath  string // Where to mount inside the guest.
+}
+
 // GeneratorConfig holds the inputs for generating a merged cloud-config.
 type GeneratorConfig struct {
 	Hostname      string
-	AuthorizedKey string      // SSH public key in authorized_keys format.
-	UserDataPath  string      // Path to user-provided cloud-config.yaml (optional).
+	AuthorizedKey string        // SSH public key in authorized_keys format.
+	UserDataPath  string        // Path to user-provided cloud-config.yaml (optional).
+	Mounts        []SharedMount // VirtioFS/9p mounts to inject.
 }
 
 // Generate merges Nova's required defaults with a user-provided cloud-config.
@@ -37,6 +44,22 @@ func Generate(cfg GeneratorConfig) ([]byte, error) {
 				"ssh_authorized_keys": []any{cfg.AuthorizedKey},
 			},
 		},
+	}
+
+	// Inject VirtioFS/9p mount commands.
+	if len(cfg.Mounts) > 0 {
+		var mounts []any
+		var runcmds []any
+		for _, m := range cfg.Mounts {
+			// cloud-init mounts format: [device, mountpoint, type, options]
+			mounts = append(mounts, []any{
+				m.Tag, m.GuestPath, "virtiofs", "rw,relatime",
+			})
+			// Ensure mount point exists before cloud-init tries to mount.
+			runcmds = append(runcmds, fmt.Sprintf("mkdir -p %s", m.GuestPath))
+		}
+		defaults["mounts"] = mounts
+		defaults["runcmd"] = runcmds
 	}
 
 	// If user provided a cloud-config, merge it.

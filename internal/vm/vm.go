@@ -16,6 +16,7 @@ import (
 	"github.com/3clabs/nova/internal/config"
 	"github.com/3clabs/nova/internal/hypervisor"
 	"github.com/3clabs/nova/internal/image"
+	"github.com/3clabs/nova/internal/network"
 	"github.com/3clabs/nova/internal/state"
 )
 
@@ -126,6 +127,13 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 		Hostname:      vmName,
 		AuthorizedKey: keyPair.AuthorizedKey,
 	}
+	// Inject shared folder mounts into cloud-init.
+	for _, sf := range cfg.VM.SharedFolders {
+		ciCfg.Mounts = append(ciCfg.Mounts, cloudinit.SharedMount{
+			Tag:       sanitizeTag(sf.GuestPath),
+			GuestPath: sf.GuestPath,
+		})
+	}
 	// Look for user cloud-config alongside nova.hcl.
 	userDataPath := filepath.Join(filepath.Dir(cfgPath), "cloud-config.yaml")
 	if _, err := os.Stat(userDataPath); err == nil {
@@ -176,6 +184,16 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 			HostPath: sf.HostPath,
 			ReadOnly: sf.ReadOnly,
 		})
+	}
+
+	// Check host port availability before starting.
+	var hostPorts []int
+	for _, pf := range vmCfg.Network.PortForwards {
+		hostPorts = append(hostPorts, pf.HostPort)
+	}
+	if err := network.CheckPortsAvailable(hostPorts); err != nil {
+		o.store.Delete(machineID)
+		return fmt.Errorf("port conflict: %w", err)
 	}
 
 	// Start hypervisor.

@@ -131,6 +131,74 @@ packages:
 	}
 }
 
+func TestGenerate_WithSharedMounts(t *testing.T) {
+	out, err := Generate(GeneratorConfig{
+		Hostname:      "mount-vm",
+		AuthorizedKey: "ssh-ed25519 AAAA...",
+		Mounts: []SharedMount{
+			{Tag: "workspace", GuestPath: "/workspace"},
+			{Tag: "data", GuestPath: "/mnt/data"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	s := string(out)
+	if !strings.Contains(s, "workspace") {
+		t.Error("should contain workspace mount tag")
+	}
+	if !strings.Contains(s, "/mnt/data") {
+		t.Error("should contain /mnt/data mount path")
+	}
+	if !strings.Contains(s, "virtiofs") {
+		t.Error("should contain virtiofs filesystem type")
+	}
+	if !strings.Contains(s, "mkdir -p /workspace") {
+		t.Error("should contain mkdir runcmd for mount point")
+	}
+}
+
+func TestGenerate_MountsWithUserConfig(t *testing.T) {
+	userCfg := `#cloud-config
+runcmd:
+  - echo user-cmd
+mounts:
+  - [tmpfs, /tmp/extra, tmpfs, "size=100m"]
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cloud-config.yaml")
+	os.WriteFile(path, []byte(userCfg), 0644)
+
+	out, err := Generate(GeneratorConfig{
+		Hostname:      "merge-mount-vm",
+		AuthorizedKey: "ssh-ed25519 AAAA...",
+		UserDataPath:  path,
+		Mounts: []SharedMount{
+			{Tag: "share0", GuestPath: "/share"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	s := string(out)
+	// Both nova's mount and user's mount should be present.
+	if !strings.Contains(s, "share0") {
+		t.Error("should contain nova's virtiofs mount")
+	}
+	if !strings.Contains(s, "tmpfs") {
+		t.Error("should contain user's tmpfs mount")
+	}
+	// Both runcmds should be present.
+	if !strings.Contains(s, "mkdir -p /share") {
+		t.Error("should contain nova's mkdir runcmd")
+	}
+	if !strings.Contains(s, "echo user-cmd") {
+		t.Error("should contain user's runcmd")
+	}
+}
+
 func TestGenerate_MissingUserFile(t *testing.T) {
 	_, err := Generate(GeneratorConfig{
 		Hostname:      "vm",
