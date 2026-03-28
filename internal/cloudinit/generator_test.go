@@ -199,6 +199,51 @@ mounts:
 	}
 }
 
+func TestGenerate_NinePMounts(t *testing.T) {
+	out, err := Generate(GeneratorConfig{
+		Hostname:      "linux-vm",
+		AuthorizedKey: "ssh-ed25519 AAAA...",
+		Mounts: []SharedMount{
+			{Tag: "workspace", GuestPath: "/workspace", MountType: "9p"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	s := string(out)
+	if !strings.Contains(s, "9p") {
+		t.Error("should contain 9p filesystem type")
+	}
+	if !strings.Contains(s, "trans=virtio") {
+		t.Error("should contain trans=virtio mount option")
+	}
+	if !strings.Contains(s, "version=9p2000.L") {
+		t.Error("should contain version=9p2000.L mount option")
+	}
+	// Should NOT contain virtiofs for a 9p mount.
+	if strings.Contains(s, "virtiofs") {
+		t.Error("9p mount should not contain virtiofs")
+	}
+}
+
+func TestGenerate_DefaultMountTypeIsVirtioFS(t *testing.T) {
+	out, err := Generate(GeneratorConfig{
+		Hostname:      "vm",
+		AuthorizedKey: "ssh-ed25519 AAAA...",
+		Mounts: []SharedMount{
+			{Tag: "share", GuestPath: "/share"}, // MountType empty → virtiofs
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "virtiofs") {
+		t.Error("empty MountType should default to virtiofs")
+	}
+}
+
 func TestGenerate_MissingUserFile(t *testing.T) {
 	_, err := Generate(GeneratorConfig{
 		Hostname:      "vm",

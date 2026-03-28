@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -157,10 +158,17 @@ func (o *Orchestrator) upNode(
 		UserDataPath:  userDataPath,
 		Hosts:         hostsEntries,
 	}
+	// Inject shared folder mounts into cloud-init.
+	// Use 9p on Linux (QEMU) and virtiofs on macOS (Apple Virtualization.framework).
+	mountType := "virtiofs"
+	if runtime.GOOS == "linux" {
+		mountType = "9p"
+	}
 	for _, sf := range node.SharedFolders {
 		ciCfg.Mounts = append(ciCfg.Mounts, cloudinit.SharedMount{
 			Tag:       sanitizeTag(sf.GuestPath),
 			GuestPath: sf.GuestPath,
+			MountType: mountType,
 		})
 	}
 

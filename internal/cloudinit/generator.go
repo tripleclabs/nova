@@ -13,8 +13,9 @@ type CloudConfig map[string]any
 
 // SharedMount describes a VirtioFS/9p mount to inject into the guest.
 type SharedMount struct {
-	Tag        string // VirtioFS tag or 9p mount tag.
-	GuestPath  string // Where to mount inside the guest.
+	Tag       string // VirtioFS tag or 9p mount tag.
+	GuestPath string // Where to mount inside the guest.
+	MountType string // Filesystem type: "virtiofs" (default) or "9p".
 }
 
 // HostEntry is an /etc/hosts entry for cross-node DNS resolution.
@@ -58,10 +59,16 @@ func Generate(cfg GeneratorConfig) ([]byte, error) {
 		var mounts []any
 		var runcmds []any
 		for _, m := range cfg.Mounts {
+			fsType := m.MountType
+			if fsType == "" {
+				fsType = "virtiofs"
+			}
+			opts := "rw,relatime"
+			if fsType == "9p" {
+				opts = "trans=virtio,version=9p2000.L,rw,relatime"
+			}
 			// cloud-init mounts format: [device, mountpoint, type, options]
-			mounts = append(mounts, []any{
-				m.Tag, m.GuestPath, "virtiofs", "rw,relatime",
-			})
+			mounts = append(mounts, []any{m.Tag, m.GuestPath, fsType, opts})
 			// Ensure mount point exists before cloud-init tries to mount.
 			runcmds = append(runcmds, fmt.Sprintf("mkdir -p %s", m.GuestPath))
 		}

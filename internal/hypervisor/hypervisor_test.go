@@ -7,16 +7,17 @@ import (
 
 func TestNew(t *testing.T) {
 	h, err := New()
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin", "linux":
 		if err != nil {
-			t.Fatalf("New() on darwin should succeed: %v", err)
+			t.Fatalf("New() on %s should succeed: %v", runtime.GOOS, err)
 		}
 		if h == nil {
-			t.Fatal("hypervisor should not be nil on darwin")
+			t.Fatalf("hypervisor should not be nil on %s", runtime.GOOS)
 		}
-	} else {
+	default:
 		if err == nil {
-			t.Fatal("New() on non-darwin should return error")
+			t.Fatalf("New() on %s should return error", runtime.GOOS)
 		}
 	}
 }
