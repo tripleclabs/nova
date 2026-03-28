@@ -1,13 +1,15 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
 
-	"github.com/3clabs/nova/internal/state"
+	pb "github.com/3clabs/nova/pkg/novapb/nova/v1"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"github.com/spf13/cobra"
 )
 
@@ -29,39 +31,56 @@ func runShell(cmd *cobra.Command, args []string) error {
 		name = args[0]
 	}
 
-	home, err := os.UserHomeDir()
+	// Non-interactive mode: use the daemon's Exec RPC.
+	if shellCommand != "" {
+		return withDaemon(func(ctx context.Context, client pb.NovaClient) error {
+			resp, err := client.Exec(ctx, &pb.ExecRequest{
+				Node:    name,
+				Command: shellCommand,
+				Timeout: durationpb.New(30 * time.Second),
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Print(resp.Stdout)
+			if resp.Stderr != "" {
+				fmt.Fprint(os.Stderr, resp.Stderr)
+			}
+			if resp.ExitCode != 0 {
+				os.Exit(int(resp.ExitCode))
+			}
+			return nil
+		})
+	}
+
+	// Interactive mode: get the guest IP from the daemon, then exec ssh directly
+	// so we get a proper PTY.
+	var guestIP string
+	err := withDaemon(func(ctx context.Context, client pb.NovaClient) error {
+		resp, err := client.NodeStatus(ctx, &pb.NodeRequest{Name: name})
+		if err != nil {
+			return fmt.Errorf("VM %q not found: %w", name, err)
+		}
+		if resp.State != "running" {
+			return fmt.Errorf("VM %q is not running (state: %s)", name, resp.State)
+		}
+		guestIP = resp.Ip
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	novaDir := filepath.Join(home, ".nova")
 
-	store, err := state.NewStore(novaDir)
-	if err != nil {
-		return err
-	}
-
-	machine, err := store.Get(name)
-	if err != nil {
-		return fmt.Errorf("VM %q not found. Run 'nova up' first", name)
-	}
-	if machine.State != state.StateRunning {
-		return fmt.Errorf("VM %q is not running (state: %s)", name, machine.State)
-	}
-
-	keyPath := filepath.Join(store.MachineDir(name), "ssh", "nova_ed25519")
+	keyPath := filepath.Join(novaStateDir(), "machines", name, "ssh", "nova_ed25519")
 	if _, err := os.Stat(keyPath); err != nil {
-		return fmt.Errorf("SSH key not found at %s. Was the VM started with cloud-init?", keyPath)
+		return fmt.Errorf("SSH key not found at %s", keyPath)
 	}
 
-	// Guest IP — for now use localhost since we're behind NAT with port forwarding.
-	// The default SSH port forward is host 2222 -> guest 22.
-	host := "localhost"
-	port := "2222"
-
-	return sshConnect(host, port, "nova", keyPath, shellCommand)
+	return sshInteractive(guestIP, "22", "nova", keyPath)
 }
 
-func sshConnect(host, port, user, keyPath, command string) error {
+// sshInteractive launches an interactive SSH session with a PTY.
+func sshInteractive(host, port, user, keyPath string) error {
 	sshArgs := []string{
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
@@ -71,11 +90,6 @@ func sshConnect(host, port, user, keyPath, command string) error {
 		fmt.Sprintf("%s@%s", user, host),
 	}
 
-	if command != "" {
-		sshArgs = append(sshArgs, command)
-	}
-
-	// Retry connection during boot — VM may not have SSH ready yet.
 	var lastErr error
 	for attempt := 0; attempt < 30; attempt++ {
 		ssh := exec.Command("ssh", sshArgs...)
@@ -88,16 +102,13 @@ func sshConnect(host, port, user, keyPath, command string) error {
 			return nil
 		}
 
-		// If it's an interactive session that the user exited, don't retry.
-		if command == "" && attempt > 0 {
+		// If the user exited an interactive session, don't retry.
+		if attempt > 0 {
 			return lastErr
 		}
 
-		// Only retry on connection refused (VM still booting).
-		if attempt < 29 {
-			fmt.Fprintf(os.Stderr, "Waiting for SSH... (attempt %d/30)\n", attempt+1)
-			time.Sleep(2 * time.Second)
-		}
+		fmt.Fprintf(os.Stderr, "Waiting for SSH... (attempt %d/30)\n", attempt+1)
+		time.Sleep(2 * time.Second)
 	}
 
 	return fmt.Errorf("SSH connection failed after 30 attempts: %w", lastErr)

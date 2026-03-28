@@ -146,14 +146,14 @@ func TestDown_NotFound(t *testing.T) {
 	}
 }
 
-// ---------- Nuke ----------
+// ---------- Destroy ----------
 
-func TestNuke_ExistingVM(t *testing.T) {
+func TestDestroy_ExistingVM(t *testing.T) {
 	o := newTestOrchestrator(t)
 	createMachine(t, o, "nukevm", state.StateRunning)
 
-	if err := o.Nuke("nukevm"); err != nil {
-		t.Fatalf("Nuke: %v", err)
+	if err := o.Destroy("nukevm"); err != nil {
+		t.Fatalf("Destroy: %v", err)
 	}
 
 	// Machine should no longer exist.
@@ -163,27 +163,27 @@ func TestNuke_ExistingVM(t *testing.T) {
 	}
 }
 
-func TestNuke_StoppedVM(t *testing.T) {
+func TestDestroy_StoppedVM(t *testing.T) {
 	o := newTestOrchestrator(t)
 	createMachine(t, o, "stopped", state.StateStopped)
 
-	if err := o.Nuke("stopped"); err != nil {
-		t.Fatalf("Nuke: %v", err)
+	if err := o.Destroy("stopped"); err != nil {
+		t.Fatalf("Destroy: %v", err)
 	}
 }
 
-func TestNuke_DefaultName(t *testing.T) {
+func TestDestroy_DefaultName(t *testing.T) {
 	o := newTestOrchestrator(t)
 	createMachine(t, o, "default", state.StateCreating)
 
-	if err := o.Nuke(""); err != nil {
-		t.Fatalf("Nuke with empty name: %v", err)
+	if err := o.Destroy(""); err != nil {
+		t.Fatalf("Destroy with empty name: %v", err)
 	}
 }
 
-func TestNuke_NotFound(t *testing.T) {
+func TestDestroy_NotFound(t *testing.T) {
 	o := newTestOrchestrator(t)
-	err := o.Nuke("ghost")
+	err := o.Destroy("ghost")
 	if err == nil {
 		t.Fatal("expected error for non-existent VM")
 	}

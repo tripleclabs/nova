@@ -1,7 +1,11 @@
 package cmd
 
 import (
-	"github.com/3clabs/nova/internal/vm"
+	"context"
+	"fmt"
+	"os"
+
+	pb "github.com/3clabs/nova/pkg/novapb/nova/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -10,11 +14,24 @@ func newUpCmd() *cobra.Command {
 		Use:   "up",
 		Short: "Create and start a VM from the current configuration",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			orch, err := vm.NewOrchestrator()
+			hcl, err := os.ReadFile(flagConfig)
 			if err != nil {
-				return err
+				return fmt.Errorf("reading config %s: %w", flagConfig, err)
 			}
-			return orch.Up(cmd.Context(), flagConfig)
+
+			return withDaemon(func(ctx context.Context, client pb.NovaClient) error {
+				resp, err := client.Apply(ctx, &pb.ApplyRequest{
+					HclConfig: string(hcl),
+				})
+				if err != nil {
+					return fmt.Errorf("apply: %w", err)
+				}
+
+				for _, n := range resp.Nodes {
+					fmt.Printf("%s: %s (ip: %s)\n", n.Name, n.State, n.Ip)
+				}
+				return nil
+			})
 		},
 	}
 }

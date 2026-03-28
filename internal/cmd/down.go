@@ -1,7 +1,10 @@
 package cmd
 
 import (
-	"github.com/3clabs/nova/internal/vm"
+	"context"
+	"fmt"
+
+	pb "github.com/3clabs/nova/pkg/novapb/nova/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -10,15 +13,18 @@ func newDownCmd() *cobra.Command {
 		Use:   "down [name]",
 		Short: "Gracefully stop a running VM",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			orch, err := vm.NewOrchestrator()
-			if err != nil {
-				return err
-			}
-			name := ""
+			name := "default"
 			if len(args) > 0 {
 				name = args[0]
 			}
-			return orch.Down(name)
+
+			return withDaemon(func(ctx context.Context, client pb.NovaClient) error {
+				if _, err := client.NodeStop(ctx, &pb.NodeRequest{Name: name}); err != nil {
+					return err
+				}
+				fmt.Printf("VM %q stopped.\n", name)
+				return nil
+			})
 		},
 	}
 }

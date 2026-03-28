@@ -48,6 +48,7 @@ func NewRootCmd(version string) *cobra.Command {
 		newMonitorCmd(),
 		newSnapshotCmd(),
 		newImageCmd(),
+		newDaemonCmd(),
 	)
 
 	return root

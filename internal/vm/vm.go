@@ -7,12 +7,16 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
+	"sync"
+	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"github.com/3clabs/nova/internal/cloudinit"
 	"github.com/3clabs/nova/internal/config"
@@ -22,11 +26,22 @@ import (
 	"github.com/3clabs/nova/internal/state"
 )
 
+// ExecResult holds the output of an SSH command execution.
+type ExecResult struct {
+	ExitCode int
+	Stdout   string
+	Stderr   string
+}
+
 // Orchestrator wires together all subsystems for VM lifecycle management.
+// It retains hypervisor handles for the lifetime of each VM so that
+// stop/kill/exec operations can be performed without PID-based signalling.
 type Orchestrator struct {
-	store    *state.Store
-	images   *image.Manager
-	stateDir string
+	mu          sync.RWMutex
+	store       *state.Store
+	images      *image.Manager
+	stateDir    string
+	hypervisors map[string]hypervisor.Hypervisor // machineID → live handle
 }
 
 // NewOrchestratorWithDir creates an Orchestrator with a custom state directory (for testing).
@@ -39,7 +54,7 @@ func NewOrchestratorWithDir(novaDir string) (*Orchestrator, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Orchestrator{store: store, images: imgMgr, stateDir: novaDir}, nil
+	return &Orchestrator{store: store, images: imgMgr, stateDir: novaDir, hypervisors: make(map[string]hypervisor.Hypervisor)}, nil
 }
 
 // NewOrchestrator creates a new Orchestrator using the default Nova state directory.
@@ -60,7 +75,7 @@ func NewOrchestrator() (*Orchestrator, error) {
 		return nil, err
 	}
 
-	return &Orchestrator{store: store, images: imgMgr, stateDir: novaDir}, nil
+	return &Orchestrator{store: store, images: imgMgr, stateDir: novaDir, hypervisors: make(map[string]hypervisor.Hypervisor)}, nil
 }
 
 // Up parses config and boots all nodes defined in it.
@@ -276,6 +291,11 @@ func (o *Orchestrator) upNode(
 		return fmt.Errorf("starting VM: %w", err)
 	}
 
+	// Retain the hypervisor handle for later stop/kill/exec operations.
+	o.mu.Lock()
+	o.hypervisors[machineID] = hv
+	o.mu.Unlock()
+
 	machine.State = state.StateRunning
 	machine.PID = readPIDFile(filepath.Join(machineDir, "hypervisor.pid"))
 	if err := o.store.Update(machine); err != nil {
@@ -300,7 +320,7 @@ func readPIDFile(path string) int {
 	return pid
 }
 
-// Down gracefully stops a running VM (SIGTERM).
+// Down gracefully stops a running VM.
 func (o *Orchestrator) Down(name string) error {
 	if name == "" {
 		name = "default"
@@ -314,10 +334,20 @@ func (o *Orchestrator) Down(name string) error {
 		return fmt.Errorf("VM %q is not running (state: %s)", name, machine.State)
 	}
 
-	if machine.PID > 0 {
-		if proc, err := os.FindProcess(machine.PID); err == nil {
-			_ = proc.Signal(syscall.SIGTERM)
+	// Use retained hypervisor handle if available, otherwise best-effort.
+	o.mu.Lock()
+	hv := o.hypervisors[name]
+	o.mu.Unlock()
+
+	if hv != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := hv.Stop(ctx); err != nil {
+			slog.Warn("graceful stop failed", "vm", name, "error", err)
 		}
+		o.mu.Lock()
+		delete(o.hypervisors, name)
+		o.mu.Unlock()
 	}
 
 	machine.State = state.StateStopped
@@ -336,15 +366,18 @@ func (o *Orchestrator) Destroy(name string) error {
 		name = "default"
 	}
 
-	machine, err := o.store.Get(name)
-	if err != nil {
+	if _, err := o.store.Get(name); err != nil {
 		return fmt.Errorf("VM %q not found", name)
 	}
 
-	if machine.PID > 0 {
-		if proc, err := os.FindProcess(machine.PID); err == nil {
-			_ = proc.Signal(syscall.SIGKILL)
-		}
+	// Use retained hypervisor handle if available.
+	o.mu.Lock()
+	hv := o.hypervisors[name]
+	delete(o.hypervisors, name)
+	o.mu.Unlock()
+
+	if hv != nil {
+		hv.ForceKill()
 	}
 
 	if err := o.store.Delete(name); err != nil {
@@ -355,9 +388,166 @@ func (o *Orchestrator) Destroy(name string) error {
 	return nil
 }
 
+// ForceKill immediately terminates a VM without cleanup — simulates a power failure.
+// The machine state is set to "error" but disk/state are preserved.
+func (o *Orchestrator) ForceKill(name string) error {
+	if name == "" {
+		name = "default"
+	}
+
+	machine, err := o.store.Get(name)
+	if err != nil {
+		return fmt.Errorf("VM %q not found", name)
+	}
+
+	o.mu.Lock()
+	hv := o.hypervisors[name]
+	delete(o.hypervisors, name)
+	o.mu.Unlock()
+
+	if hv != nil {
+		hv.ForceKill()
+	}
+
+	machine.State = state.StateError
+	machine.PID = 0
+	o.store.Update(machine)
+
+	slog.Info("VM force killed", "vm", name)
+	return nil
+}
+
+// GuestIP returns the IP address of a running VM.
+func (o *Orchestrator) GuestIP(name string) (string, error) {
+	o.mu.RLock()
+	hv := o.hypervisors[name]
+	o.mu.RUnlock()
+
+	if hv == nil {
+		return "", fmt.Errorf("VM %q has no active hypervisor handle", name)
+	}
+	return hv.GuestIP()
+}
+
+// ExecSSH runs a command on a VM via SSH and returns the result.
+func (o *Orchestrator) ExecSSH(name, command string, timeout time.Duration) (*ExecResult, error) {
+	if name == "" {
+		name = "default"
+	}
+
+	machine, err := o.store.Get(name)
+	if err != nil {
+		return nil, fmt.Errorf("VM %q not found", name)
+	}
+	if machine.State != state.StateRunning {
+		return nil, fmt.Errorf("VM %q is not running", name)
+	}
+
+	// Read the private key.
+	machineDir := o.store.MachineDir(name)
+	keyPath := filepath.Join(machineDir, "ssh", "nova_ed25519")
+	keyData, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading SSH key: %w", err)
+	}
+	signer, err := ssh.ParsePrivateKey(keyData)
+	if err != nil {
+		return nil, fmt.Errorf("parsing SSH key: %w", err)
+	}
+
+	// Get guest IP.
+	guestIP, err := o.GuestIP(name)
+	if err != nil {
+		return nil, fmt.Errorf("getting guest IP: %w", err)
+	}
+
+	// Connect with timeout.
+	config := &ssh.ClientConfig{
+		User:            "nova",
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         10 * time.Second,
+	}
+
+	addr := net.JoinHostPort(guestIP, "22")
+	client, err := ssh.Dial("tcp", addr, config)
+	if err != nil {
+		return nil, fmt.Errorf("SSH dial %s: %w", addr, err)
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		return nil, fmt.Errorf("creating SSH session: %w", err)
+	}
+	defer session.Close()
+
+	var stdout, stderr strings.Builder
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+
+	// Run with timeout.
+	done := make(chan error, 1)
+	go func() { done <- session.Run(command) }()
+
+	select {
+	case err := <-done:
+		exitCode := 0
+		if err != nil {
+			if exitErr, ok := err.(*ssh.ExitError); ok {
+				exitCode = exitErr.ExitStatus()
+			} else {
+				return nil, fmt.Errorf("SSH exec: %w", err)
+			}
+		}
+		return &ExecResult{
+			ExitCode: exitCode,
+			Stdout:   stdout.String(),
+			Stderr:   stderr.String(),
+		}, nil
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("SSH exec timed out after %v", timeout)
+	}
+}
+
+// WaitReady blocks until a VM is reachable via SSH, or the timeout expires.
+func (o *Orchestrator) WaitReady(ctx context.Context, name string) error {
+	if name == "" {
+		name = "default"
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("VM %q not ready: %w", name, ctx.Err())
+		default:
+		}
+
+		result, err := o.ExecSSH(name, "true", 5*time.Second)
+		if err == nil && result.ExitCode == 0 {
+			return nil
+		}
+
+		slog.Debug("waiting for SSH", "vm", name, "error", err)
+		time.Sleep(2 * time.Second)
+	}
+}
+
 // Status returns all known machines.
 func (o *Orchestrator) Status() ([]*state.Machine, error) {
 	return o.store.List()
+}
+
+// DestroyAll force-kills all VMs and cleans up all state. Used for test teardown.
+func (o *Orchestrator) DestroyAll() error {
+	machines, err := o.store.List()
+	if err != nil {
+		return err
+	}
+	for _, m := range machines {
+		o.Destroy(m.ID)
+	}
+	return nil
 }
 
 func parseMemoryMB(mem string) (uint64, error) {
