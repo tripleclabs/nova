@@ -168,23 +168,28 @@
 ## Phase 7: Network Chaos & TUI
 
 ### 7.1 Network Conditioning API
-- [ ] Define `NetworkConditioner` interface: `SetLatency()`, `SetPacketLoss()`, `SetJitter()`, `Partition()`, `Reset()`
-- [ ] Implement packet interception in user-space network stack (or `tc`/`netem` on Linux)
-- [ ] Support per-link rules (node-a <-> node-b)
+- [x] `Conditioner` with `SetRule()`, `GetRule()`, `RemoveRule()`, `AllRules()`, `Reset()`
+- [x] `Degrade()` — set latency, jitter, packet loss on a link
+- [x] `Partition()` / `Heal()` — hard partition and recovery
+- [x] `ShouldDrop()` / `Delay()` — per-packet decisions with probabilistic loss and jitter
+- [x] Order-independent link keys (a<->b == b<->a)
+- [x] 13 unit tests covering all operations, edge cases, jitter variance
 
 ### 7.2 HCL & CLI Integration
-- [ ] Add `link` blocks to `nova.hcl` for declarative network conditions
-- [ ] Implement `nova link degrade <a> <b> --latency --loss --jitter`
-- [ ] Implement `nova link partition <a> <b>` and `nova link heal <a> <b>`
-- [ ] Implement `nova link status` to show current conditions
+- [x] Add `link` blocks to `nova.hcl` schema (node_a, node_b labels + latency/jitter/loss/down)
+- [x] `nova link degrade <a> <b> --latency --jitter --loss` with duration/percent parsing
+- [x] `nova link partition <a> <b>` and `nova link heal <a> <b>`
+- [x] `nova link status` — tabwriter output of all active conditions
+- [x] `nova link reset` — clear all conditions
+- [x] State persisted to `~/.nova/chaos.json`
 
 ### 7.3 Nova TUI (Monitor)
-- [ ] Add `charmbracelet/bubbletea` and `bubbles` dependencies
-- [ ] Implement `nova monitor` command launching the TUI
-- [ ] Build node status panel: per-node CPU, RAM, state, uptime
-- [ ] Build network topology view: visual map of nodes and links
-- [ ] Interactive controls: toggle partitions, adjust latency sliders
-- [ ] Real-time updates via polling or event stream from running VMs
+- [x] Add `charmbracelet/bubbletea`, `bubbles`, `lipgloss` dependencies
+- [x] `nova monitor` launches full-screen alt-screen TUI
+- [x] Node status panel: name, state indicator (● ○ ◐ ✗), uptime
+- [x] Network topology panel: link list with latency/jitter/loss/partition status
+- [x] Interactive controls: [p] toggle partition, [h] heal, [j/k] navigate, [q] quit
+- [x] Real-time polling (2s refresh) of machine state and chaos rules
 
 ---
 

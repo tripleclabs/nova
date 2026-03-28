@@ -21,6 +21,17 @@ type Config struct {
 	Defaults  *Defaults  `hcl:"defaults,block"`
 	Nodes     []Node     `hcl:"node,block"`
 	Network   *Network   `hcl:"network,block"`
+	Links     []Link     `hcl:"link,block"`
+}
+
+// Link defines declarative network conditions between two nodes.
+type Link struct {
+	NodeA   string `hcl:"node_a,label"`
+	NodeB   string `hcl:"node_b,label"`
+	Latency string `hcl:"latency,optional"` // e.g. "50ms"
+	Jitter  string `hcl:"jitter,optional"`  // e.g. "10ms"
+	Loss    string `hcl:"loss,optional"`    // e.g. "5%"
+	Down    bool   `hcl:"down,optional"`    // Hard partition.
 }
 
 // Variable defines a user-settable variable with an optional default.
