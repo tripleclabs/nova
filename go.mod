@@ -3,6 +3,7 @@ module github.com/3clabs/nova
 go 1.26.1
 
 require (
+	github.com/Code-Hex/vz/v3 v3.7.1
 	github.com/google/go-containerregistry v0.21.3
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/spf13/cobra v1.10.2
@@ -10,6 +11,7 @@ require (
 )
 
 require (
+	github.com/Code-Hex/go-infinity-channel v1.0.0 // indirect
 	github.com/agext/levenshtein v1.2.1 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/containerd/stargz-snapshotter/estargz v0.18.2 // indirect

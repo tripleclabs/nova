@@ -60,26 +60,29 @@
 ## Phase 3: Hypervisor Abstraction Layer (HAL)
 
 ### 3.1 HAL Interface
-- [ ] Define `Hypervisor` interface: `Start()`, `Stop()`, `ForceKill()`, `GetState()`
-- [ ] Define `VMConfig` struct passed to the hypervisor (CPU, memory, disks, network, devices)
-- [ ] Define `VMState` enum: `Starting`, `Running`, `Stopped`, `Error`
-- [ ] Implement hypervisor registry/factory for selecting backend by platform
+- [x] Define `Hypervisor` interface: `Start()`, `Stop()`, `ForceKill()`, `GetState()`, `GuestIP()`
+- [x] Define `VMConfig` struct passed to the hypervisor (CPU, memory, disks, network, shares)
+- [x] Define `VMState` enum: `Starting`, `Running`, `Stopped`, `Error`
+- [x] Implement hypervisor factory for selecting backend by platform (`New()`)
 
 ### 3.2 macOS: Apple Virtualization.framework (VZ) Engine
-- [ ] Add `Code-Hex/vz` Go bindings dependency
-- [ ] Implement `VZEngine.Start()` — configure VZ VM (bootloader, CPU, memory, storage, entropy)
-- [ ] Implement `VZEngine.Stop()` — graceful shutdown via VZ API
-- [ ] Implement `VZEngine.ForceKill()` — force stop
-- [ ] Implement `VZEngine.GetState()` — map VZ state to `VMState`
-- [ ] Handle EFI boot with kernel/initrd or full UEFI disk boot
-- [ ] Wire serial console output to a log file per machine
+- [x] Add `Code-Hex/vz/v3` Go bindings dependency
+- [x] Implement `VZEngine.Start()` — configure VZ VM (EFI bootloader, CPU, memory, storage, entropy, NAT network)
+- [x] Implement `VZEngine.Stop()` — graceful shutdown via `RequestStop()`, fallback to force kill
+- [x] Implement `VZEngine.ForceKill()` — force stop via VZ `Stop()`
+- [x] Implement `VZEngine.GetState()` — map VZ state via `StateChangedNotify` watcher
+- [x] Handle full UEFI disk boot via `EFIBootLoader`
+- [x] Wire serial console output to a log file per machine
+- [x] Add VirtioFS shared folder support in VZ config builder
+- [x] Add non-darwin stub (`vz_stub.go`) for cross-compilation
 
 ### 3.3 Wire HAL to CLI
-- [ ] Implement `nova up`: parse config -> pull image (if needed) -> create CoW disk -> start VM -> update state
-- [ ] Implement `nova down`: lookup machine -> graceful stop -> update state
-- [ ] Implement `nova nuke`: force kill -> delete disk overlay -> delete state record
-- [ ] Implement `nova status`: read state store -> display table of machines with state, uptime, resources
-- [ ] Write integration test: full `up` -> `status` -> `down` lifecycle
+- [x] Implement `nova up`: parse config -> pull image -> create CoW disk -> start VM -> update state
+- [x] Implement `nova down`: lookup machine -> graceful stop -> update state
+- [x] Implement `nova nuke`: force kill -> delete disk overlay -> delete state record
+- [x] Implement `nova status`: read state store -> display table of machines with state, uptime, resources
+- [x] Build `Orchestrator` layer (`internal/vm/`) connecting config, image, hypervisor, and state
+- [x] Write unit tests for HAL interface, VM config, memory parsing, tag sanitization
 
 ---
 
