@@ -6,8 +6,11 @@ require (
 	github.com/Code-Hex/vz/v3 v3.7.1
 	github.com/google/go-containerregistry v0.21.3
 	github.com/hashicorp/hcl/v2 v2.24.0
+	github.com/kdomanski/iso9660 v0.4.0
 	github.com/spf13/cobra v1.10.2
 	github.com/zclconf/go-cty v1.18.0
+	golang.org/x/crypto v0.38.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

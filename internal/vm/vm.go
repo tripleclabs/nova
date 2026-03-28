@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/3clabs/nova/internal/cloudinit"
 	"github.com/3clabs/nova/internal/config"
 	"github.com/3clabs/nova/internal/hypervisor"
 	"github.com/3clabs/nova/internal/image"
@@ -110,6 +111,39 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 		return fmt.Errorf("creating disk overlay: %w", err)
 	}
 
+	// Generate SSH keypair.
+	slog.Info("generating SSH keypair")
+	sshDir := filepath.Join(machineDir, "ssh")
+	keyPair, err := cloudinit.GenerateSSHKeyPair(sshDir)
+	if err != nil {
+		o.store.Delete(machineID)
+		return fmt.Errorf("generating SSH keys: %w", err)
+	}
+
+	// Generate cloud-init config and CIDATA ISO.
+	slog.Info("building cloud-init ISO")
+	ciCfg := cloudinit.GeneratorConfig{
+		Hostname:      vmName,
+		AuthorizedKey: keyPair.AuthorizedKey,
+	}
+	// Look for user cloud-config alongside nova.hcl.
+	userDataPath := filepath.Join(filepath.Dir(cfgPath), "cloud-config.yaml")
+	if _, err := os.Stat(userDataPath); err == nil {
+		ciCfg.UserDataPath = userDataPath
+	}
+
+	userData, err := cloudinit.Generate(ciCfg)
+	if err != nil {
+		o.store.Delete(machineID)
+		return fmt.Errorf("generating cloud-init config: %w", err)
+	}
+
+	cidataPath := filepath.Join(machineDir, "cidata.iso")
+	if err := cloudinit.BuildCIDATAISO(cidataPath, vmName, userData); err != nil {
+		o.store.Delete(machineID)
+		return fmt.Errorf("building CIDATA ISO: %w", err)
+	}
+
 	// Build hypervisor config.
 	memMB, err := parseMemoryMB(cfg.VM.Memory)
 	if err != nil {
@@ -118,11 +152,12 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 	}
 
 	vmCfg := hypervisor.VMConfig{
-		Name:     vmName,
-		CPUs:     uint(cfg.VM.CPUs),
-		MemoryMB: memMB,
-		DiskPath: overlayPath,
-		LogPath:  filepath.Join(machineDir, "console.log"),
+		Name:       vmName,
+		CPUs:       uint(cfg.VM.CPUs),
+		MemoryMB:   memMB,
+		DiskPath:   overlayPath,
+		CIDATAPath: cidataPath,
+		LogPath:    filepath.Join(machineDir, "console.log"),
 	}
 
 	// Port forwards.

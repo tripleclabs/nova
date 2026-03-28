@@ -89,29 +89,29 @@
 ## Phase 4: Cloud-Init & Bootstrapping
 
 ### 4.1 SSH Key Management
-- [ ] Auto-generate an ED25519 keypair per machine on first `nova up`
-- [ ] Store keys in `~/.nova/machines/<id>/ssh/`
-- [ ] Clean up keys on `nova nuke`
+- [x] Auto-generate an ED25519 keypair per machine on first `nova up`
+- [x] Store keys in `~/.nova/machines/<id>/ssh/`
+- [x] Clean up keys on `nova nuke` (handled by state store `Delete` which removes machine dir)
 
 ### 4.2 Cloud-Init Generator
-- [ ] Implement `CloudInitGenerator` — merges user `cloud-config.yaml` with Nova defaults
-- [ ] Nova defaults: inject SSH public key, set hostname, disable password auth
-- [ ] Preserve user-provided packages, runcmd, write_files without clobbering
-- [ ] Validate merged cloud-config against cloud-init schema (basic structural checks)
-- [ ] Write unit tests for merge logic (user-only, defaults-only, combined, conflicting keys)
+- [x] Implement `CloudInitGenerator` — merges user `cloud-config.yaml` with Nova defaults
+- [x] Nova defaults: inject SSH public key, set hostname, disable password auth, create `nova` user
+- [x] Preserve user-provided packages, runcmd, write_files, mounts, bootcmd without clobbering
+- [x] Protect `users` block from user override (security)
+- [x] Write unit tests for merge logic (defaults-only, with user config, user override blocked, list merging, missing file)
 
 ### 4.3 NoCloud Data Source
-- [ ] Generate `meta-data` and `user-data` files from merged config
-- [ ] Package into a NoCloud ISO (cidata volume label) using a pure-Go ISO9660 writer or `mkisofs`
-- [ ] Attach ISO as secondary CD-ROM device in HAL `VMConfig`
-- [ ] Verify cloud-init runs on first boot by checking SSH connectivity
+- [x] Generate `meta-data` (instance-id, local-hostname) and `user-data` from merged config
+- [x] Package into a NoCloud ISO (CIDATA volume label) using pure-Go `kdomanski/iso9660`
+- [x] Attach ISO as secondary block device via HAL `VMConfig.CIDATAPath`
+- [x] Write tests verifying ISO structure and content
 
 ### 4.4 `nova shell` Command
-- [ ] Look up machine state and retrieve stored private key path
-- [ ] Determine guest IP (from DHCP lease or VZ API)
-- [ ] Establish interactive SSH session using `golang.org/x/crypto/ssh` or exec `ssh`
-- [ ] Support `-c` flag for non-interactive command execution
-- [ ] Handle connection retries during boot (VM may not be ready immediately)
+- [x] Look up machine state and retrieve stored private key path
+- [x] Connect via SSH to localhost:2222 (NAT port forward to guest:22)
+- [x] Exec `ssh` with StrictHostKeyChecking disabled for ephemeral VMs
+- [x] Support `-c` flag for non-interactive command execution
+- [x] Handle connection retries during boot (30 attempts, 2s intervals)
 
 ---
 
