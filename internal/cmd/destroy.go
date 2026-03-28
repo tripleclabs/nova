@@ -5,10 +5,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newNukeCmd() *cobra.Command {
+func newDestroyCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "nuke [name]",
-		Short: "Force kill a VM and delete all its data",
+		Use:     "destroy [name]",
+		Short:   "Force kill a VM and delete all its data",
+		Aliases: []string{"nuke"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			orch, err := vm.NewOrchestrator()
 			if err != nil {
@@ -18,7 +19,7 @@ func newNukeCmd() *cobra.Command {
 			if len(args) > 0 {
 				name = args[0]
 			}
-			return orch.Nuke(name)
+			return orch.Destroy(name)
 		},
 	}
 }

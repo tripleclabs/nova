@@ -27,6 +27,7 @@ type VMConfig struct {
 	CIDATAPath string        // Path to cloud-init ISO (optional).
 	LogPath    string        // Path for serial console log output.
 	MachineDir string        // Path to the machine state directory (for EFI NVRAM, etc).
+	PIDPath    string        // Path to write the hypervisor process PID (optional).
 	Network    NetworkConfig
 	Shares     []ShareConfig
 }

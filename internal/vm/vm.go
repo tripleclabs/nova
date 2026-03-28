@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/3clabs/nova/internal/cloudinit"
 	"github.com/3clabs/nova/internal/config"
@@ -149,6 +150,12 @@ func (o *Orchestrator) upNode(
 	}
 	fmt.Println()
 
+	// Look up OS metadata from the image cache for OS-aware cloud-init config.
+	var imageOS string
+	if ci := o.images.ResolveImage(node.Image); ci != nil {
+		imageOS = ci.OS
+	}
+
 	// Create CoW overlay.
 	overlayPath, err := image.CreateOverlay(baseDisk, machineDir)
 	if err != nil {
@@ -183,6 +190,7 @@ func (o *Orchestrator) upNode(
 		UserDataPath:  userDataPath,
 		Hosts:         hostsEntries,
 		Rosetta:       needsRosetta,
+		OS:            imageOS,
 	}
 	// Inject shared folder mounts into cloud-init.
 	// Use 9p on Linux (QEMU) and virtiofs on macOS (Apple Virtualization.framework).
@@ -226,6 +234,7 @@ func (o *Orchestrator) upNode(
 		CIDATAPath: cidataPath,
 		LogPath:    filepath.Join(machineDir, "console.log"),
 		MachineDir: machineDir,
+		PIDPath:    filepath.Join(machineDir, "hypervisor.pid"),
 	}
 
 	for _, pf := range node.PortForwards {
@@ -268,7 +277,7 @@ func (o *Orchestrator) upNode(
 	}
 
 	machine.State = state.StateRunning
-	machine.PID = os.Getpid()
+	machine.PID = readPIDFile(filepath.Join(machineDir, "hypervisor.pid"))
 	if err := o.store.Update(machine); err != nil {
 		hv.ForceKill()
 		return err
@@ -278,7 +287,20 @@ func (o *Orchestrator) upNode(
 	return nil
 }
 
-// Down gracefully stops a running VM.
+// readPIDFile reads an integer PID from a file, returning 0 on any error.
+func readPIDFile(path string) int {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return 0
+	}
+	return pid
+}
+
+// Down gracefully stops a running VM (SIGTERM).
 func (o *Orchestrator) Down(name string) error {
 	if name == "" {
 		name = "default"
@@ -292,6 +314,12 @@ func (o *Orchestrator) Down(name string) error {
 		return fmt.Errorf("VM %q is not running (state: %s)", name, machine.State)
 	}
 
+	if machine.PID > 0 {
+		if proc, err := os.FindProcess(machine.PID); err == nil {
+			_ = proc.Signal(syscall.SIGTERM)
+		}
+	}
+
 	machine.State = state.StateStopped
 	machine.PID = 0
 	if err := o.store.Update(machine); err != nil {
@@ -302,21 +330,28 @@ func (o *Orchestrator) Down(name string) error {
 	return nil
 }
 
-// Nuke force-kills a VM and deletes all its data.
-func (o *Orchestrator) Nuke(name string) error {
+// Destroy force-kills a VM and deletes all its data.
+func (o *Orchestrator) Destroy(name string) error {
 	if name == "" {
 		name = "default"
 	}
 
-	if _, err := o.store.Get(name); err != nil {
+	machine, err := o.store.Get(name)
+	if err != nil {
 		return fmt.Errorf("VM %q not found", name)
+	}
+
+	if machine.PID > 0 {
+		if proc, err := os.FindProcess(machine.PID); err == nil {
+			_ = proc.Signal(syscall.SIGKILL)
+		}
 	}
 
 	if err := o.store.Delete(name); err != nil {
 		return err
 	}
 
-	fmt.Printf("VM %q nuked.\n", name)
+	fmt.Printf("VM %q destroyed.\n", name)
 	return nil
 }
 

@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
+	"github.com/3clabs/nova/internal/distro"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -26,11 +29,12 @@ type Manager struct {
 
 // CachedImage holds metadata about a locally cached image.
 type CachedImage struct {
-	Ref       string    `json:"ref"`
-	Digest    string    `json:"digest"`
-	DiskPath  string    `json:"disk_path"`
-	Size      int64     `json:"size"`
-	PulledAt  time.Time `json:"pulled_at"`
+	Ref      string    `json:"ref"`
+	Digest   string    `json:"digest"`
+	DiskPath string    `json:"disk_path"`
+	Size     int64     `json:"size"`
+	PulledAt time.Time `json:"pulled_at"`
+	OS       string    `json:"os,omitempty"` // e.g. "ubuntu", "alpine"; empty for custom images
 }
 
 // NewManager creates a Manager with the given cache directory.
@@ -41,9 +45,19 @@ func NewManager(cacheDir string) (*Manager, error) {
 	return &Manager{cacheDir: cacheDir}, nil
 }
 
-// Resolve parses an image reference and returns the local cache path if it exists,
-// or an empty string if the image needs to be pulled.
+// normalizeRef expands a distro shorthand to its canonical nova.local reference.
+// "ubuntu:24.04" → "nova.local/ubuntu:24.04"; other refs are returned unchanged.
+func normalizeRef(ref string) string {
+	if distro.IsShorthand(ref) {
+		return distro.CanonicalRef(ref)
+	}
+	return ref
+}
+
+// Resolve returns the local cache path for an image reference, or an empty
+// string if the image has not been cached yet. Distro shorthands are accepted.
 func (m *Manager) Resolve(ref string) (string, error) {
+	ref = normalizeRef(ref)
 	ci, err := m.readMeta(ref)
 	if err != nil {
 		return "", nil // not cached
@@ -54,24 +68,151 @@ func (m *Manager) Resolve(ref string) (string, error) {
 	return ci.DiskPath, nil
 }
 
-// Pull downloads an OCI artifact from a remote registry and extracts the VM disk
-// image to the local cache. It returns the path to the cached disk file.
+// ResolveImage returns the full CachedImage for a reference, or nil if not cached.
+func (m *Manager) ResolveImage(ref string) *CachedImage {
+	ref = normalizeRef(ref)
+	ci, err := m.readMeta(ref)
+	if err != nil {
+		return nil
+	}
+	if _, err := os.Stat(ci.DiskPath); err != nil {
+		return nil
+	}
+	return ci
+}
+
+// Pull ensures a VM disk image is available in the local cache and returns its path.
 //
-// The artifact is expected to contain exactly one layer whose content is the VM
-// disk image (raw or qcow2). Progress is reported via the optional callback.
+// Resolution order:
+//  1. Already cached → return immediately.
+//  2. Known distro shorthand (e.g. "ubuntu:24.04") → download from official URL.
+//  3. Full OCI reference → pull from the remote registry.
+//
+// Progress is reported via the optional callback (bytes complete, bytes total).
 func (m *Manager) Pull(ctx context.Context, ref string, progress func(complete, total int64)) (string, error) {
-	// Check cache first.
-	if path, _ := m.Resolve(ref); path != "" {
-		slog.Info("image already cached", "ref", ref, "path", path)
+	canonical := normalizeRef(ref)
+
+	// 1. Check cache.
+	if path, _ := m.Resolve(canonical); path != "" {
+		slog.Info("image already cached", "ref", canonical, "path", path)
 		return path, nil
 	}
 
+	// 2. Known distro — download directly from the official URL.
+	if distro.IsShorthand(ref) {
+		shorthand := ref
+		spec, ok := distro.Lookup(shorthand)
+		if !ok {
+			return "", fmt.Errorf("unknown distro %q — run 'nova image build' to add a custom image", shorthand)
+		}
+		return m.pullDistro(ctx, shorthand, spec, progress)
+	}
+
+	// 3. OCI registry pull.
+	return m.pullOCI(ctx, canonical, progress)
+}
+
+// pullDistro downloads a distro cloud image from its official URL and caches it.
+func (m *Manager) pullDistro(ctx context.Context, shorthand string, spec *distro.Spec, progress func(int64, int64)) (string, error) {
+	canonical := distro.CanonicalRef(shorthand)
+
+	url, ok := spec.DownloadURL()
+	if !ok {
+		return "", fmt.Errorf("no download URL for distro %q on arch %s", shorthand, archName())
+	}
+
+	slog.Info("downloading distro image", "distro", shorthand, "url", url)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("building request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("downloading %s: %w", shorthand, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("downloading %s: HTTP %d", shorthand, resp.StatusCode)
+	}
+
+	// Stream to a temp file in the cache dir, then compute digest.
+	tmp, err := os.CreateTemp(m.cacheDir, "download-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { os.Remove(tmpPath) }()
+
+	h := sha256.New()
+	var written int64
+	total := resp.ContentLength
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := tmp.Write(buf[:n]); werr != nil {
+				tmp.Close()
+				return "", werr
+			}
+			h.Write(buf[:n])
+			written += int64(n)
+			if progress != nil {
+				progress(written, total)
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			tmp.Close()
+			return "", fmt.Errorf("downloading %s: %w", shorthand, err)
+		}
+	}
+	tmp.Close()
+
+	digestHex := hex.EncodeToString(h.Sum(nil))
+	diskPath := m.diskPath(digestHex)
+	if err := linkOrCopy(tmpPath, diskPath); err != nil {
+		return "", fmt.Errorf("caching disk: %w", err)
+	}
+
+	// Extract OS name from shorthand ("ubuntu:24.04" → "ubuntu").
+	osName := shorthand
+	if i := len(shorthand); i > 0 {
+		for j, c := range shorthand {
+			if c == ':' {
+				osName = shorthand[:j]
+				break
+			}
+		}
+	}
+
+	ci := &CachedImage{
+		Ref:      canonical,
+		Digest:   digestHex,
+		DiskPath: diskPath,
+		Size:     written,
+		PulledAt: time.Now(),
+		OS:       osName,
+	}
+	if err := m.writeMeta(canonical, ci); err != nil {
+		return "", err
+	}
+
+	slog.Info("distro image cached", "ref", canonical, "size", written, "path", diskPath)
+	return diskPath, nil
+}
+
+// pullOCI pulls an image from an OCI registry and caches the first layer as the disk.
+func (m *Manager) pullOCI(ctx context.Context, ref string, progress func(complete, total int64)) (string, error) {
 	parsed, err := name.ParseReference(ref)
 	if err != nil {
 		return "", fmt.Errorf("parsing image ref %q: %w", ref, err)
 	}
 
-	slog.Info("pulling image", "ref", ref)
+	slog.Info("pulling OCI image", "ref", ref)
 
 	desc, err := remote.Get(parsed, remote.WithAuthFromKeychain(authn.DefaultKeychain), remote.WithContext(ctx))
 	if err != nil {
@@ -91,7 +232,6 @@ func (m *Manager) Pull(ctx context.Context, ref string, progress func(complete, 
 		return "", fmt.Errorf("image %q has no layers", ref)
 	}
 
-	// Use the first layer as the disk image.
 	layer := layers[0]
 	digest, err := img.Digest()
 	if err != nil {
@@ -99,7 +239,6 @@ func (m *Manager) Pull(ctx context.Context, ref string, progress func(complete, 
 	}
 
 	diskPath := m.diskPath(digest.Hex)
-
 	if err := m.extractLayer(layer, diskPath, progress); err != nil {
 		os.Remove(diskPath)
 		return "", fmt.Errorf("extracting layer: %w", err)
@@ -121,8 +260,12 @@ func (m *Manager) Pull(ctx context.Context, ref string, progress func(complete, 
 		return "", err
 	}
 
-	slog.Info("image cached", "ref", ref, "size", info.Size(), "path", diskPath)
+	slog.Info("OCI image cached", "ref", ref, "size", info.Size(), "path", diskPath)
 	return diskPath, nil
+}
+
+func archName() string {
+	return runtime.GOARCH
 }
 
 // List returns all cached images.

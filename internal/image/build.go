@@ -55,7 +55,10 @@ func (l *rawDiskLayer) Uncompressed() (io.ReadCloser, error) {
 //
 // After Build returns, the image is immediately available to nova up without
 // any network access.
-func (m *Manager) Build(ctx context.Context, diskPath, ref string, push bool) (*CachedImage, error) {
+// Build packages a local disk image into the nova cache.
+// osName is an optional OS identifier (e.g. "ubuntu", "alpine:3.21") stored as
+// metadata so nova up can apply OS-specific cloud-init configuration.
+func (m *Manager) Build(ctx context.Context, diskPath, ref, osName string, push bool) (*CachedImage, error) {
 	if _, err := os.Stat(diskPath); err != nil {
 		return nil, fmt.Errorf("disk image %q: %w", diskPath, err)
 	}
@@ -90,6 +93,7 @@ func (m *Manager) Build(ctx context.Context, diskPath, ref string, push bool) (*
 		DiskPath: destPath,
 		Size:     size,
 		PulledAt: time.Now(),
+		OS:       osName,
 	}
 	if err := m.writeMeta(ref, ci); err != nil {
 		return nil, fmt.Errorf("writing image metadata: %w", err)

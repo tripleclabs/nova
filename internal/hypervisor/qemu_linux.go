@@ -64,7 +64,12 @@ func (e *qemuEngine) Start(ctx context.Context, cfg VMConfig) error {
 		e.tmpDir = ""
 		return fmt.Errorf("starting QEMU process: %w", err)
 	}
-	slog.Info("QEMU process started", "name", cfg.Name, "pid", e.cmd.Process.Pid)
+	pid := e.cmd.Process.Pid
+	slog.Info("QEMU process started", "name", cfg.Name, "pid", pid)
+
+	if cfg.PIDPath != "" {
+		_ = os.WriteFile(cfg.PIDPath, []byte(fmt.Sprintf("%d\n", pid)), 0644)
+	}
 
 	e.waitCh = make(chan error, 1)
 	go func() {

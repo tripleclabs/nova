@@ -81,60 +81,47 @@ brew install tripleclabs/tap/nova
 
 ## Images
 
-Nova VM images are OCI artifacts where the first layer is a raw disk image (qcow2 or raw format). Use `nova image build` to package any standard cloud image into the local nova cache — no registry required.
+Nova has built-in support for common Linux distributions. Just use the shorthand in `nova.hcl` and Nova will pull the official cloud image automatically on `nova up`:
 
-### Ubuntu 24.04
-
-```bash
-curl -fSL https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img \
-     -o ubuntu-24.04.img
-nova image build ubuntu-24.04.img --tag nova.local/ubuntu:24.04
-rm ubuntu-24.04.img
+```hcl
+vm {
+  image = "ubuntu:24.04"   # or ubuntu:22.04, alpine:3.21, alpine:3.20
+}
 ```
 
-### Ubuntu 22.04
+No manual downloading required. The image is cached locally after the first pull.
+
+### Pre-fetching
+
+To download an image ahead of time (e.g. before going offline):
 
 ```bash
-curl -fSL https://cloud-images.ubuntu.com/minimal/releases/jammy/release/ubuntu-22.04-minimal-cloudimg-amd64.img \
-     -o ubuntu-22.04.img
-nova image build ubuntu-22.04.img --tag nova.local/ubuntu:22.04
-rm ubuntu-22.04.img
+nova image get ubuntu:24.04
+nova image get alpine:3.21
 ```
 
-### Alpine 3.21
+### Custom images
+
+Package any local qcow2 or raw disk image into the nova cache:
 
 ```bash
-curl -fSL https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.0-x86_64-bios-tiny-r0.qcow2 \
-     -o alpine-3.21.qcow2
-nova image build alpine-3.21.qcow2 --tag nova.local/alpine:3.21
-rm alpine-3.21.qcow2
+nova image build myimage.qcow2 --tag nova.local/myimage:latest --os ubuntu
 ```
 
-### ARM64 (Apple Silicon / aarch64)
-
-Replace `amd64`/`x86_64` with `arm64`/`aarch64` in the URLs above. For example:
+Use `--push` to also upload it to a registry so your team can pull it automatically:
 
 ```bash
-curl -fSL https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
-     -o ubuntu-24.04-arm64.img
-nova image build ubuntu-24.04-arm64.img --tag nova.local/ubuntu:24.04
+nova image build myimage.qcow2 --tag ghcr.io/myorg/myimage:latest --os ubuntu --push
 ```
+
+Once pushed, anyone can reference `ghcr.io/myorg/myimage:latest` in `nova.hcl` and it will be pulled on `nova up`.
 
 ### Managing the cache
 
 ```bash
-nova image list              # show all cached images
+nova image list                        # show all cached images
 nova image rm nova.local/ubuntu:24.04  # remove an image
 ```
-
-### Sharing images via a registry
-
-```bash
-# Build and push to your registry in one step
-nova image build ubuntu-24.04.img --tag ghcr.io/myorg/ubuntu:24.04 --push
-```
-
-Once pushed, anyone on your team can reference the image in `nova.hcl` and have it pulled automatically on `nova up`.
 
 ## Configuration
 
@@ -149,7 +136,7 @@ variable "project_name" {
 
 vm {
   name   = var.project_name
-  image  = "nova.local/ubuntu:24.04"
+  image  = "ubuntu:24.04"
   cpus   = 2
   memory = "2G"
 
@@ -169,7 +156,7 @@ vm {
 
 ```hcl
 defaults {
-  image  = "nova.local/ubuntu:24.04"
+  image  = "ubuntu:24.04"
   cpus   = 2
   memory = "2G"
 }
@@ -217,9 +204,13 @@ Nova merges your config with its own defaults (SSH key injection, hostname, nova
 | `nova up` | Create and start VMs from configuration |
 | `nova down [name]` | Gracefully stop a VM |
 | `nova status` | Show status of all managed VMs |
-| `nova nuke [name]` | Force kill a VM and delete all data |
+| `nova destroy [name]` | Force kill a VM and delete all data |
 | `nova shell [name]` | SSH into a running VM |
 | `nova shell -c "cmd"` | Run a command in the VM |
+| `nova image get <distro:version>` | Pre-fetch a known distro image |
+| `nova image build <file> --tag <ref>` | Package a local disk image into the cache |
+| `nova image list` | List cached images |
+| `nova image rm <ref>` | Remove a cached image |
 | `nova link degrade a b` | Add latency/loss between nodes |
 | `nova link partition a b` | Hard partition two nodes |
 | `nova link heal a b` | Remove conditions between nodes |

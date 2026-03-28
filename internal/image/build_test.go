@@ -225,7 +225,7 @@ func TestBuild_SeedsCache(t *testing.T) {
 	cacheDir := t.TempDir()
 	m, _ := NewManager(cacheDir)
 
-	ci, err := m.Build(t.Context(), diskPath, ref, false)
+	ci, err := m.Build(t.Context(), diskPath, ref, "", false)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestBuild_ResolvableAfterBuild(t *testing.T) {
 	ref := "ghcr.io/test/resolvable:v1"
 
 	m, _ := NewManager(t.TempDir())
-	if _, err := m.Build(t.Context(), diskPath, ref, false); err != nil {
+	if _, err := m.Build(t.Context(), diskPath, ref, "", false); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 
@@ -278,7 +278,7 @@ func TestBuild_ListableAfterBuild(t *testing.T) {
 	ref := "ghcr.io/test/listable:v1"
 
 	m, _ := NewManager(t.TempDir())
-	if _, err := m.Build(t.Context(), diskPath, ref, false); err != nil {
+	if _, err := m.Build(t.Context(), diskPath, ref, "", false); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 
@@ -299,7 +299,7 @@ func TestBuild_DiskPathInCacheDir(t *testing.T) {
 	diskPath := writeTempDisk(t, []byte("data"))
 	m, _ := NewManager(cacheDir)
 
-	ci, err := m.Build(t.Context(), diskPath, "example.com/img:tag", false)
+	ci, err := m.Build(t.Context(), diskPath, "example.com/img:tag", "", false)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestBuild_DiskPathInCacheDir(t *testing.T) {
 
 func TestBuild_InvalidDiskPath(t *testing.T) {
 	m, _ := NewManager(t.TempDir())
-	_, err := m.Build(t.Context(), "/nonexistent/disk.img", "example.com/img:tag", false)
+	_, err := m.Build(t.Context(), "/nonexistent/disk.img", "example.com/img:tag", "", false)
 	if err == nil {
 		t.Fatal("expected error for missing disk file")
 	}
@@ -322,7 +322,7 @@ func TestBuild_InvalidDiskPath(t *testing.T) {
 func TestBuild_InvalidRef(t *testing.T) {
 	diskPath := writeTempDisk(t, []byte("data"))
 	m, _ := NewManager(t.TempDir())
-	_, err := m.Build(t.Context(), diskPath, "not a valid ref !!!", false)
+	_, err := m.Build(t.Context(), diskPath, "not a valid ref !!!", "", false)
 	if err == nil {
 		t.Fatal("expected error for invalid ref")
 	}
@@ -334,11 +334,11 @@ func TestBuild_Idempotent(t *testing.T) {
 	ref := "example.com/img:v1"
 	m, _ := NewManager(t.TempDir())
 
-	ci1, err := m.Build(t.Context(), diskPath, ref, false)
+	ci1, err := m.Build(t.Context(), diskPath, ref, "", false)
 	if err != nil {
 		t.Fatalf("first Build: %v", err)
 	}
-	ci2, err := m.Build(t.Context(), diskPath, ref, false)
+	ci2, err := m.Build(t.Context(), diskPath, ref, "", false)
 	if err != nil {
 		t.Fatalf("second Build: %v", err)
 	}

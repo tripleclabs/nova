@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/3clabs/nova/internal/distro"
 	"gopkg.in/yaml.v3"
 )
 
@@ -32,27 +33,48 @@ type GeneratorConfig struct {
 	Mounts        []SharedMount // VirtioFS/9p mounts to inject.
 	Hosts         []HostEntry   // /etc/hosts entries for multi-node clusters.
 	Rosetta       bool          // Enable Rosetta 2 binfmt_misc registration in the guest.
+	OS            string        // OS identifier (e.g. "ubuntu", "alpine"); empty = generic defaults.
 }
 
 // Generate merges Nova's required defaults with a user-provided cloud-config.
 // Nova defaults: set hostname, inject SSH key, disable password auth.
 // User-provided lists (packages, runcmd, write_files) are preserved and merged.
 func Generate(cfg GeneratorConfig) ([]byte, error) {
+	profile := profileForOS(cfg.OS)
+
+	novaUser := map[string]any{
+		"name":                "nova",
+		"shell":               profile.Shell,
+		"passwd":              "*",
+		"lock_passwd":         false,
+		"ssh_authorized_keys": []any{cfg.AuthorizedKey},
+	}
+	if profile.SudoLine != "" {
+		novaUser["sudo"] = profile.SudoLine
+	}
+
 	defaults := CloudConfig{
-		"hostname":              cfg.Hostname,
-		"manage_etc_hosts":      true,
-		"ssh_pwauth":            false,
-		"disable_root":          true,
+		"hostname":         cfg.Hostname,
+		"manage_etc_hosts": true,
+		"ssh_pwauth":       false,
+		"disable_root":     false,
 		"users": []any{
+			novaUser,
 			map[string]any{
-				"name":                "nova",
-				"sudo":                "ALL=(ALL) NOPASSWD:ALL",
-				"groups":              "sudo",
-				"shell":               "/bin/bash",
-				"lock_passwd":         true,
+				"name":                "root",
 				"ssh_authorized_keys": []any{cfg.AuthorizedKey},
 			},
 		},
+	}
+
+	// Accumulate write_files entries.
+	var writeFiles []any
+	if profile.DoasConf != "" {
+		writeFiles = append(writeFiles, map[string]any{
+			"path":        "/etc/doas.d/nova.conf",
+			"content":     profile.DoasConf,
+			"permissions": "0400",
+		})
 	}
 
 	// Inject VirtioFS/9p mount commands.
@@ -79,7 +101,6 @@ func Generate(cfg GeneratorConfig) ([]byte, error) {
 
 	// Inject /etc/hosts entries for multi-node clusters.
 	if len(cfg.Hosts) > 0 {
-		var writeFiles []any
 		var hostsContent string
 		for _, h := range cfg.Hosts {
 			hostsContent += fmt.Sprintf("%s %s\n", h.IP, h.Hostname)
@@ -89,6 +110,9 @@ func Generate(cfg GeneratorConfig) ([]byte, error) {
 			"append":  true,
 			"content": hostsContent,
 		})
+	}
+
+	if len(writeFiles) > 0 {
 		defaults["write_files"] = writeFiles
 	}
 
@@ -122,6 +146,15 @@ func Generate(cfg GeneratorConfig) ([]byte, error) {
 	}
 
 	return append([]byte("#cloud-config\n"), out...), nil
+}
+
+// profileForOS returns the distro profile for the given OS key or family name.
+// Falls back to generic Ubuntu-compatible defaults for empty or unknown values.
+func profileForOS(os string) distro.Profile {
+	if os == "" {
+		return distro.ProfileFor("") // returns generic defaults
+	}
+	return distro.ProfileFor(os)
 }
 
 func loadUserConfig(path string) (CloudConfig, error) {
