@@ -144,3 +144,93 @@ func containsBytes(haystack, needle []byte) bool {
 	}
 	return false
 }
+
+func TestDetectFormat_FileTooSmall(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tiny.img")
+
+	// Create a file with fewer than 4 bytes — should be detected as raw
+	// (partial read fills buffer with zeros, which don't match qcow2 magic).
+	os.WriteFile(path, []byte{0x01, 0x02}, 0644)
+
+	format, err := DetectFormat(path)
+	if err != nil {
+		t.Fatalf("DetectFormat: %v", err)
+	}
+	if format != FormatRaw {
+		t.Errorf("format = %q, want raw for tiny file", format)
+	}
+}
+
+func TestDetectFormat_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.img")
+
+	os.WriteFile(path, []byte{}, 0644)
+
+	_, err := DetectFormat(path)
+	if err == nil {
+		t.Error("expected error for empty file")
+	}
+}
+
+func TestDetectFormat_FileNotExist(t *testing.T) {
+	_, err := DetectFormat("/nonexistent/path/disk.img")
+	if err == nil {
+		t.Error("expected error for non-existent file")
+	}
+}
+
+func TestDetectFormat_ExactlyFourBytes(t *testing.T) {
+	dir := t.TempDir()
+
+	// Exactly 4 bytes, not qcow2 magic -- should be raw.
+	path := filepath.Join(dir, "four.img")
+	os.WriteFile(path, []byte{0x00, 0x00, 0x00, 0x00}, 0644)
+
+	format, err := DetectFormat(path)
+	if err != nil {
+		t.Fatalf("DetectFormat: %v", err)
+	}
+	if format != FormatRaw {
+		t.Errorf("format = %q, want raw", format)
+	}
+}
+
+func TestDetectFormat_PartialQCOW2Magic(t *testing.T) {
+	dir := t.TempDir()
+
+	// First 3 bytes match but 4th differs.
+	path := filepath.Join(dir, "partial.img")
+	os.WriteFile(path, []byte{0x51, 0x46, 0x49, 0x00, 0x00}, 0644)
+
+	format, err := DetectFormat(path)
+	if err != nil {
+		t.Fatalf("DetectFormat: %v", err)
+	}
+	if format != FormatRaw {
+		t.Errorf("format = %q, want raw for partial qcow2 magic", format)
+	}
+}
+
+func TestCreateOverlay_NonExistentBaseImage(t *testing.T) {
+	dir := t.TempDir()
+	machineDir := filepath.Join(dir, "machines", "test-vm")
+
+	_, err := CreateOverlay("/nonexistent/base.qcow2", machineDir)
+	if err == nil {
+		t.Error("expected error for non-existent base image")
+	}
+}
+
+func TestDiskFormatConstants(t *testing.T) {
+	if FormatQCOW2 != "qcow2" {
+		t.Errorf("FormatQCOW2 = %q, want %q", FormatQCOW2, "qcow2")
+	}
+	if FormatRaw != "raw" {
+		t.Errorf("FormatRaw = %q, want %q", FormatRaw, "raw")
+	}
+	if FormatUnknown != "unknown" {
+		t.Errorf("FormatUnknown = %q, want %q", FormatUnknown, "unknown")
+	}
+}

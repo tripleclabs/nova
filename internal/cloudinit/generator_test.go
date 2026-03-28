@@ -299,3 +299,172 @@ func TestGenerate_MissingUserFile(t *testing.T) {
 		t.Fatal("expected error for missing user config file")
 	}
 }
+
+func TestToSlice_StringSlice(t *testing.T) {
+	input := []string{"a", "b", "c"}
+	result, ok := toSlice(input)
+	if !ok {
+		t.Fatal("toSlice should return true for []string")
+	}
+	if len(result) != 3 {
+		t.Fatalf("expected 3 elements, got %d", len(result))
+	}
+	for i, expected := range []string{"a", "b", "c"} {
+		if result[i] != expected {
+			t.Errorf("element %d = %v, want %v", i, result[i], expected)
+		}
+	}
+}
+
+func TestToSlice_NonSlice(t *testing.T) {
+	_, ok := toSlice("not a slice")
+	if ok {
+		t.Error("toSlice should return false for a string")
+	}
+	_, ok = toSlice(42)
+	if ok {
+		t.Error("toSlice should return false for an int")
+	}
+}
+
+func TestAppendLists_NonListBase(t *testing.T) {
+	// When base is not a list but override is, override wins.
+	result := appendLists("not-a-list", []any{"x", "y"})
+	list, ok := result.([]any)
+	if !ok {
+		t.Fatalf("expected []any, got %T", result)
+	}
+	if len(list) != 2 || list[0] != "x" {
+		t.Errorf("unexpected result: %v", list)
+	}
+}
+
+func TestAppendLists_NonListOverride(t *testing.T) {
+	// When override is not a list, base is returned.
+	base := []any{"a", "b"}
+	result := appendLists(base, "not-a-list")
+	list, ok := result.([]any)
+	if !ok {
+		t.Fatalf("expected []any, got %T", result)
+	}
+	if len(list) != 2 || list[0] != "a" {
+		t.Errorf("unexpected result: %v", list)
+	}
+}
+
+func TestAppendLists_BothNonList(t *testing.T) {
+	// When neither is a list, base is returned.
+	result := appendLists("base-val", "override-val")
+	s, ok := result.(string)
+	if !ok {
+		t.Fatalf("expected string, got %T", result)
+	}
+	if s != "base-val" {
+		t.Errorf("expected base-val, got %s", s)
+	}
+}
+
+func TestGenerate_HostsNoMounts(t *testing.T) {
+	out, err := Generate(GeneratorConfig{
+		Hostname:      "hosts-vm",
+		AuthorizedKey: "ssh-ed25519 AAAA...",
+		Hosts: []HostEntry{
+			{IP: "10.0.0.1", Hostname: "node1"},
+			{IP: "10.0.0.2", Hostname: "node2"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	s := string(out)
+	if !strings.Contains(s, "10.0.0.1 node1") {
+		t.Error("should contain first host entry")
+	}
+	if !strings.Contains(s, "10.0.0.2 node2") {
+		t.Error("should contain second host entry")
+	}
+	if !strings.Contains(s, "/etc/hosts") {
+		t.Error("should contain /etc/hosts path in write_files")
+	}
+	if !strings.Contains(s, "append: true") {
+		t.Error("should set append: true for hosts file")
+	}
+	// No mounts means no runcmd should be generated (no mkdir).
+	if strings.Contains(s, "mkdir") {
+		t.Error("should not contain mkdir when there are no mounts")
+	}
+}
+
+func TestGenerate_RosettaWithUserConfig(t *testing.T) {
+	userCfg := `#cloud-config
+runcmd:
+  - echo user-setup
+packages:
+  - htop
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cloud-config.yaml")
+	os.WriteFile(path, []byte(userCfg), 0644)
+
+	out, err := Generate(GeneratorConfig{
+		Hostname:      "rosetta-user-vm",
+		AuthorizedKey: "ssh-ed25519 AAAA...",
+		Rosetta:       true,
+		UserDataPath:  path,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	s := string(out)
+	// Rosetta commands should be present.
+	if !strings.Contains(s, "update-binfmts") {
+		t.Error("should contain rosetta binfmt registration")
+	}
+	if !strings.Contains(s, "/media/rosetta") {
+		t.Error("should contain rosetta mount point")
+	}
+	// User runcmd should be merged in.
+	if !strings.Contains(s, "echo user-setup") {
+		t.Error("should contain user's runcmd")
+	}
+	// User packages should be present.
+	if !strings.Contains(s, "htop") {
+		t.Error("should contain user's packages")
+	}
+}
+
+func TestGenerate_EmptyAuthorizedKey(t *testing.T) {
+	out, err := Generate(GeneratorConfig{
+		Hostname:      "empty-key-vm",
+		AuthorizedKey: "",
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	s := string(out)
+	if !strings.Contains(s, "hostname: empty-key-vm") {
+		t.Error("should contain hostname")
+	}
+	if !strings.Contains(s, "ssh_authorized_keys") {
+		t.Error("should still contain ssh_authorized_keys field")
+	}
+}
+
+func TestGenerate_InvalidUserConfigYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.yaml")
+	// Use truly invalid YAML: a tab character in an indentation context breaks the parser.
+	os.WriteFile(path, []byte("key:\n\t- broken\n  - mixed"), 0644)
+
+	_, err := Generate(GeneratorConfig{
+		Hostname:      "vm",
+		AuthorizedKey: "ssh-ed25519 AAAA...",
+		UserDataPath:  path,
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid YAML")
+	}
+}

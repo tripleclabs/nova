@@ -28,6 +28,19 @@ type Orchestrator struct {
 	stateDir string
 }
 
+// NewOrchestratorWithDir creates an Orchestrator with a custom state directory (for testing).
+func NewOrchestratorWithDir(novaDir string) (*Orchestrator, error) {
+	store, err := state.NewStore(novaDir)
+	if err != nil {
+		return nil, err
+	}
+	imgMgr, err := image.NewManager(filepath.Join(novaDir, "cache", "images"))
+	if err != nil {
+		return nil, err
+	}
+	return &Orchestrator{store: store, images: imgMgr, stateDir: novaDir}, nil
+}
+
 // NewOrchestrator creates a new Orchestrator using the default Nova state directory.
 func NewOrchestrator() (*Orchestrator, error) {
 	home, err := os.UserHomeDir()
