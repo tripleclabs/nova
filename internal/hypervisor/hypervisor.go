@@ -76,6 +76,8 @@ func New() (Hypervisor, error) {
 		return newVZEngine()
 	case "linux":
 		return newQEMUEngine()
+	case "windows":
+		return newHyperVEngine()
 	default:
 		return nil, fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
