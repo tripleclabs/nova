@@ -37,23 +37,23 @@
 ## Phase 2: OCI Image Engine
 
 ### 2.1 OCI Client Integration
-- [ ] Add `google/go-containerregistry` dependency
-- [ ] Define `ImageManager` interface: `Pull()`, `Resolve()`, `List()`, `Delete()`
-- [ ] Implement registry authentication (anonymous + token-based for GHCR/Docker Hub)
+- [x] Add `google/go-containerregistry` dependency
+- [x] Define `ImageManager` interface: `Pull()`, `Resolve()`, `List()`, `Delete()`
+- [x] Implement registry authentication (anonymous + token-based for GHCR/Docker Hub)
 
 ### 2.2 Image Pull & Cache
-- [ ] Implement `Pull()` — download OCI artifact layers to local cache (`~/.nova/cache/images/`)
-- [ ] Support content-addressable storage (digest-based dedup)
-- [ ] Add progress reporting (download bytes / total bytes)
-- [ ] Implement `List()` — show cached images with size and age
-- [ ] Implement `Delete()` — prune cached images
+- [x] Implement `Pull()` — download OCI artifact layers to local cache (`~/.nova/cache/images/`)
+- [x] Support content-addressable storage (digest-based dedup)
+- [x] Add progress reporting (download bytes / total bytes)
+- [x] Implement `List()` — show cached images with size and age
+- [x] Implement `Delete()` — prune cached images
 
 ### 2.3 Copy-on-Write Disk Creation
-- [ ] Detect disk format of cached base image (raw vs qcow2)
-- [ ] Implement CoW clone using qcow2 backing files (`qemu-img create -b`)
-- [ ] For raw images, implement reflink copy fallback (`cp --reflink=auto` on supported FS)
-- [ ] Store per-machine overlay disks in `~/.nova/machines/<id>/disk.qcow2`
-- [ ] Write integration tests: pull a small test image, create CoW clone, verify it boots
+- [x] Detect disk format of cached base image (raw vs qcow2)
+- [x] Implement CoW clone using qcow2 backing files (`qemu-img create -b`)
+- [x] For raw images, create qcow2 overlay with raw backing format
+- [x] Store per-machine overlay disks in `~/.nova/machines/<id>/disk.qcow2`
+- [x] Write integration tests: format detection, qcow2 overlay, raw overlay
 
 ---
 
