@@ -17,6 +17,13 @@ builds:
       # CGO cross-compilation needs special setup; build native only.
       - goos: linux
         goarch: arm64
+    hooks:
+      post:
+        # Sign macOS binaries with virtualization entitlement.
+        - cmd: >-
+            {{ if eq .Os "darwin" }}
+            codesign --entitlements entitlements.plist --force -s - {{ .Path }}
+            {{ end }}
 
 archives:
   - format: tar.gz
@@ -31,3 +38,17 @@ changelog:
     exclude:
       - "^docs:"
       - "^test:"
+
+brews:
+  - repository:
+      owner: tripleclabs
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/tripleclabs/nova"
+    description: "Next-generation local VM orchestrator — a modern replacement for Vagrant"
+    license: "MIT"
+    dependencies:
+      - name: qemu
+    test: |
+      assert_match "nova", shell_output("#{bin}/nova version")
