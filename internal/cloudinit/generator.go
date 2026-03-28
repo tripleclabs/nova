@@ -17,12 +17,19 @@ type SharedMount struct {
 	GuestPath  string // Where to mount inside the guest.
 }
 
+// HostEntry is an /etc/hosts entry for cross-node DNS resolution.
+type HostEntry struct {
+	IP       string
+	Hostname string
+}
+
 // GeneratorConfig holds the inputs for generating a merged cloud-config.
 type GeneratorConfig struct {
 	Hostname      string
 	AuthorizedKey string        // SSH public key in authorized_keys format.
 	UserDataPath  string        // Path to user-provided cloud-config.yaml (optional).
 	Mounts        []SharedMount // VirtioFS/9p mounts to inject.
+	Hosts         []HostEntry   // /etc/hosts entries for multi-node clusters.
 }
 
 // Generate merges Nova's required defaults with a user-provided cloud-config.
@@ -60,6 +67,21 @@ func Generate(cfg GeneratorConfig) ([]byte, error) {
 		}
 		defaults["mounts"] = mounts
 		defaults["runcmd"] = runcmds
+	}
+
+	// Inject /etc/hosts entries for multi-node clusters.
+	if len(cfg.Hosts) > 0 {
+		var writeFiles []any
+		var hostsContent string
+		for _, h := range cfg.Hosts {
+			hostsContent += fmt.Sprintf("%s %s\n", h.IP, h.Hostname)
+		}
+		writeFiles = append(writeFiles, map[string]any{
+			"path":    "/etc/hosts",
+			"append":  true,
+			"content": hostsContent,
+		})
+		defaults["write_files"] = writeFiles
 	}
 
 	// If user provided a cloud-config, merge it.

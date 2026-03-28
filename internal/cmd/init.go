@@ -15,6 +15,7 @@ const defaultNovaHCL = `variable "project_name" {
   default = "my-project"
 }
 
+# --- Single VM mode ---
 vm {
   name   = var.project_name
   image  = "ghcr.io/3clabs/ubuntu-cloud:24.04"
@@ -31,6 +32,29 @@ vm {
     guest_path = "/workspace"
   }
 }
+
+# --- Multi-node mode (uncomment and remove the vm block above) ---
+# defaults {
+#   image  = "ghcr.io/3clabs/ubuntu-cloud:24.04"
+#   cpus   = 2
+#   memory = "2G"
+# }
+#
+# network {
+#   subnet = "10.0.0.0/24"
+# }
+#
+# node "control" {
+#   cpus   = 4
+#   memory = "8G"
+#   port_forward {
+#     host  = 6443
+#     guest = 6443
+#   }
+# }
+#
+# node "worker-1" {}
+# node "worker-2" {}
 `
 
 const defaultCloudConfig = `#cloud-config

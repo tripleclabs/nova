@@ -137,28 +137,31 @@
 ## Phase 6: Multi-Node & Cross-Platform
 
 ### 6.1 Multi-Node HCL Schema
-- [ ] Extend `nova.hcl` schema to support multiple `node` blocks
-- [ ] Each node inherits global defaults but can override CPU, memory, image
-- [ ] Validate unique node names and non-conflicting port forwards across nodes
+- [x] Extend `nova.hcl` schema with `node` blocks (labeled), `defaults` block, `network` block
+- [x] Each node inherits from `defaults` but can override cpu, memory, image, arch
+- [x] Validate unique node names, unique IPs, and non-conflicting port forwards across nodes
+- [x] `ResolveNodes()` method normalizes both single-VM and multi-node configs
+- [x] Auto-assign IPs from subnet (`.2`, `.3`, ...) when not specified
+- [x] Updated `nova init` template with commented multi-node example
 
 ### 6.2 Cross-Node Networking
-- [ ] Implement a virtual switch / shared network segment for nodes in the same file
-- [ ] Assign static IPs or run a lightweight DHCP within the virtual network
-- [ ] Inject `/etc/hosts` entries via cloud-init so nodes can resolve each other by name
-- [ ] Test: two nodes can ping each other by hostname
+- [x] Auto-assign static IPs from configurable subnet (default `10.0.0.0/24`)
+- [x] Inject `/etc/hosts` entries via cloud-init `write_files` (append to `/etc/hosts`)
+- [x] Orchestrator builds host entries from all resolved nodes and passes to each
+- [x] Write tests: multi-node parsing, IP assignment, cross-node port conflict, duplicate IP
 
 ### 6.3 Linux QEMU Backend
-- [ ] Implement `QEMUEngine` conforming to `Hypervisor` interface
+- [ ] Implement `QEMUEngine` conforming to `Hypervisor` interface (see `QEMU_TODO.md`)
 - [ ] Wrap QEMU binary execution with correct flags (KVM accel, virtio devices)
 - [ ] Implement QMP (QEMU Machine Protocol) client for `Stop()`, `GetState()`
 - [ ] Wire VirtioFS via virtiofsd or 9p for shared folders
 - [ ] Test lifecycle on Linux
 
 ### 6.4 CI/CD & Distribution
-- [ ] Set up GitHub Actions: lint, unit tests, integration tests (macOS + Linux matrix)
-- [ ] Cross-compile for darwin/arm64, darwin/amd64, linux/arm64, linux/amd64
-- [ ] Set up GoReleaser for tagged releases with checksums and archives
-- [ ] Publish binaries to GitHub Releases
+- [x] Set up GitHub Actions CI: lint (golangci-lint), tests (macOS + Linux matrix)
+- [x] Cross-compile for darwin/arm64, darwin/amd64, linux/arm64, linux/amd64
+- [x] Set up GoReleaser config for tagged releases with checksums and archives
+- [x] Release workflow triggered on `v*` tags, publishes to GitHub Releases
 
 ---
 

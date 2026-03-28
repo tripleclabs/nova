@@ -48,32 +48,64 @@ func NewOrchestrator() (*Orchestrator, error) {
 	return &Orchestrator{store: store, images: imgMgr, stateDir: novaDir}, nil
 }
 
-// Up parses config, pulls the image, creates a CoW overlay, and boots the VM.
+// Up parses config and boots all nodes defined in it.
 func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return err
 	}
 
-	vmName := cfg.VM.Name
-	if vmName == "" {
-		vmName = "default"
+	nodes := cfg.ResolveNodes()
+
+	// Build /etc/hosts entries for multi-node clusters.
+	var hostsEntries []cloudinit.HostEntry
+	if len(nodes) > 1 {
+		for _, n := range nodes {
+			if n.IP != "" {
+				hostsEntries = append(hostsEntries, cloudinit.HostEntry{
+					IP:       n.IP,
+					Hostname: n.Name,
+				})
+			}
+		}
 	}
-	machineID := vmName
+
+	// Look for user cloud-config alongside nova.hcl.
+	var userDataPath string
+	candidate := filepath.Join(filepath.Dir(cfgPath), "cloud-config.yaml")
+	if _, err := os.Stat(candidate); err == nil {
+		userDataPath = candidate
+	}
+
+	for _, node := range nodes {
+		if err := o.upNode(ctx, cfgPath, node, hostsEntries, userDataPath); err != nil {
+			return fmt.Errorf("node %q: %w", node.Name, err)
+		}
+	}
+
+	return nil
+}
+
+func (o *Orchestrator) upNode(
+	ctx context.Context,
+	cfgPath string,
+	node config.ResolvedNode,
+	hostsEntries []cloudinit.HostEntry,
+	userDataPath string,
+) error {
+	machineID := node.Name
 
 	// Check if already running.
 	if existing, err := o.store.Get(machineID); err == nil {
 		if existing.State == state.StateRunning {
-			return fmt.Errorf("VM %q is already running (use 'nova down' first)", machineID)
+			return fmt.Errorf("already running (use 'nova down' first)")
 		}
-		// Clean up stale state from a previously stopped machine.
 		o.store.Delete(machineID)
 	}
 
-	// Create machine record.
 	machine := &state.Machine{
 		ID:         machineID,
-		Name:       vmName,
+		Name:       node.Name,
 		State:      state.StateCreating,
 		ConfigHash: hashConfig(cfgPath),
 	}
@@ -81,7 +113,6 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 		return err
 	}
 
-	// Lock the machine for this operation.
 	unlock, err := o.store.Lock(machineID)
 	if err != nil {
 		return err
@@ -91,11 +122,11 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 	machineDir := o.store.MachineDir(machineID)
 
 	// Pull image.
-	slog.Info("pulling image", "ref", cfg.VM.Image)
-	baseDisk, err := o.images.Pull(ctx, cfg.VM.Image, func(complete, total int64) {
+	slog.Info("pulling image", "node", node.Name, "ref", node.Image)
+	baseDisk, err := o.images.Pull(ctx, node.Image, func(complete, total int64) {
 		if total > 0 {
 			pct := float64(complete) / float64(total) * 100
-			fmt.Printf("\rPulling image... %.0f%%", pct)
+			fmt.Printf("\r[%s] Pulling image... %.0f%%", node.Name, pct)
 		}
 	})
 	if err != nil {
@@ -105,7 +136,6 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 	fmt.Println()
 
 	// Create CoW overlay.
-	slog.Info("creating disk overlay")
 	overlayPath, err := image.CreateOverlay(baseDisk, machineDir)
 	if err != nil {
 		o.store.Delete(machineID)
@@ -113,7 +143,6 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 	}
 
 	// Generate SSH keypair.
-	slog.Info("generating SSH keypair")
 	sshDir := filepath.Join(machineDir, "ssh")
 	keyPair, err := cloudinit.GenerateSSHKeyPair(sshDir)
 	if err != nil {
@@ -121,55 +150,49 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 		return fmt.Errorf("generating SSH keys: %w", err)
 	}
 
-	// Generate cloud-init config and CIDATA ISO.
-	slog.Info("building cloud-init ISO")
+	// Build cloud-init config.
 	ciCfg := cloudinit.GeneratorConfig{
-		Hostname:      vmName,
+		Hostname:      node.Name,
 		AuthorizedKey: keyPair.AuthorizedKey,
+		UserDataPath:  userDataPath,
+		Hosts:         hostsEntries,
 	}
-	// Inject shared folder mounts into cloud-init.
-	for _, sf := range cfg.VM.SharedFolders {
+	for _, sf := range node.SharedFolders {
 		ciCfg.Mounts = append(ciCfg.Mounts, cloudinit.SharedMount{
 			Tag:       sanitizeTag(sf.GuestPath),
 			GuestPath: sf.GuestPath,
 		})
 	}
-	// Look for user cloud-config alongside nova.hcl.
-	userDataPath := filepath.Join(filepath.Dir(cfgPath), "cloud-config.yaml")
-	if _, err := os.Stat(userDataPath); err == nil {
-		ciCfg.UserDataPath = userDataPath
-	}
 
 	userData, err := cloudinit.Generate(ciCfg)
 	if err != nil {
 		o.store.Delete(machineID)
-		return fmt.Errorf("generating cloud-init config: %w", err)
+		return fmt.Errorf("generating cloud-init: %w", err)
 	}
 
 	cidataPath := filepath.Join(machineDir, "cidata.iso")
-	if err := cloudinit.BuildCIDATAISO(cidataPath, vmName, userData); err != nil {
+	if err := cloudinit.BuildCIDATAISO(cidataPath, node.Name, userData); err != nil {
 		o.store.Delete(machineID)
 		return fmt.Errorf("building CIDATA ISO: %w", err)
 	}
 
 	// Build hypervisor config.
-	memMB, err := parseMemoryMB(cfg.VM.Memory)
+	memMB, err := parseMemoryMB(node.Memory)
 	if err != nil {
 		o.store.Delete(machineID)
 		return err
 	}
 
 	vmCfg := hypervisor.VMConfig{
-		Name:       vmName,
-		CPUs:       uint(cfg.VM.CPUs),
+		Name:       node.Name,
+		CPUs:       uint(node.CPUs),
 		MemoryMB:   memMB,
 		DiskPath:   overlayPath,
 		CIDATAPath: cidataPath,
 		LogPath:    filepath.Join(machineDir, "console.log"),
 	}
 
-	// Port forwards.
-	for _, pf := range cfg.VM.PortForwards {
+	for _, pf := range node.PortForwards {
 		vmCfg.Network.PortForwards = append(vmCfg.Network.PortForwards, hypervisor.PortForward{
 			HostPort:  pf.Host,
 			GuestPort: pf.Guest,
@@ -177,8 +200,7 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 		})
 	}
 
-	// Shared folders.
-	for _, sf := range cfg.VM.SharedFolders {
+	for _, sf := range node.SharedFolders {
 		vmCfg.Shares = append(vmCfg.Shares, hypervisor.ShareConfig{
 			Tag:      sanitizeTag(sf.GuestPath),
 			HostPath: sf.HostPath,
@@ -186,7 +208,7 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 		})
 	}
 
-	// Check host port availability before starting.
+	// Check host port availability.
 	var hostPorts []int
 	for _, pf := range vmCfg.Network.PortForwards {
 		hostPorts = append(hostPorts, pf.HostPort)
@@ -203,21 +225,20 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 		return err
 	}
 
-	fmt.Printf("Starting VM %q (%d CPUs, %dMB RAM)...\n", vmName, vmCfg.CPUs, vmCfg.MemoryMB)
+	fmt.Printf("Starting %q (%d CPUs, %dMB RAM)...\n", node.Name, vmCfg.CPUs, vmCfg.MemoryMB)
 	if err := hv.Start(ctx, vmCfg); err != nil {
 		o.store.Delete(machineID)
 		return fmt.Errorf("starting VM: %w", err)
 	}
 
-	// Update state to running.
 	machine.State = state.StateRunning
-	machine.PID = os.Getpid() // The host process managing the VM.
+	machine.PID = os.Getpid()
 	if err := o.store.Update(machine); err != nil {
 		hv.ForceKill()
 		return err
 	}
 
-	fmt.Printf("VM %q is running.\n", vmName)
+	fmt.Printf("%q is running.\n", node.Name)
 	return nil
 }
 
@@ -235,8 +256,6 @@ func (o *Orchestrator) Down(name string) error {
 		return fmt.Errorf("VM %q is not running (state: %s)", name, machine.State)
 	}
 
-	// For now, send SIGTERM to the process managing the VM.
-	// In a full implementation, we'd communicate with the running hypervisor instance.
 	machine.State = state.StateStopped
 	machine.PID = 0
 	if err := o.store.Update(machine); err != nil {
