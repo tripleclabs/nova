@@ -53,6 +53,63 @@ make build
 
 Download the latest binary from [GitHub Releases](https://github.com/3clabs/nova/releases) for your platform.
 
+## Images
+
+Nova VM images are OCI artifacts where the first layer is a raw disk image (qcow2 or raw format). Use `nova image build` to package any standard cloud image into the local nova cache — no registry required.
+
+### Ubuntu 24.04
+
+```bash
+curl -fSL https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img \
+     -o ubuntu-24.04.img
+nova image build ubuntu-24.04.img --tag nova.local/ubuntu:24.04
+rm ubuntu-24.04.img
+```
+
+### Ubuntu 22.04
+
+```bash
+curl -fSL https://cloud-images.ubuntu.com/minimal/releases/jammy/release/ubuntu-22.04-minimal-cloudimg-amd64.img \
+     -o ubuntu-22.04.img
+nova image build ubuntu-22.04.img --tag nova.local/ubuntu:22.04
+rm ubuntu-22.04.img
+```
+
+### Alpine 3.21
+
+```bash
+curl -fSL https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.0-x86_64-bios-tiny-r0.qcow2 \
+     -o alpine-3.21.qcow2
+nova image build alpine-3.21.qcow2 --tag nova.local/alpine:3.21
+rm alpine-3.21.qcow2
+```
+
+### ARM64 (Apple Silicon / aarch64)
+
+Replace `amd64`/`x86_64` with `arm64`/`aarch64` in the URLs above. For example:
+
+```bash
+curl -fSL https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
+     -o ubuntu-24.04-arm64.img
+nova image build ubuntu-24.04-arm64.img --tag nova.local/ubuntu:24.04
+```
+
+### Managing the cache
+
+```bash
+nova image list              # show all cached images
+nova image rm nova.local/ubuntu:24.04  # remove an image
+```
+
+### Sharing images via a registry
+
+```bash
+# Build and push to your registry in one step
+nova image build ubuntu-24.04.img --tag ghcr.io/myorg/ubuntu:24.04 --push
+```
+
+Once pushed, anyone on your team can reference the image in `nova.hcl` and have it pulled automatically on `nova up`.
+
 ## Configuration
 
 Nova uses HCL configuration files. Run `nova init` to generate a starter config.
@@ -66,7 +123,7 @@ variable "project_name" {
 
 vm {
   name   = var.project_name
-  image  = "ghcr.io/3clabs/ubuntu-cloud:24.04"
+  image  = "nova.local/ubuntu:24.04"
   cpus   = 2
   memory = "2G"
 
@@ -86,7 +143,7 @@ vm {
 
 ```hcl
 defaults {
-  image  = "ghcr.io/3clabs/ubuntu-cloud:24.04"
+  image  = "nova.local/ubuntu:24.04"
   cpus   = 2
   memory = "2G"
 }

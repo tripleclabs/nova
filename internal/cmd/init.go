@@ -18,7 +18,7 @@ const defaultNovaHCL = `variable "project_name" {
 # --- Single VM mode ---
 vm {
   name   = var.project_name
-  image  = "ghcr.io/3clabs/ubuntu-cloud:24.04"
+  image  = "nova.local/ubuntu:24.04"
   cpus   = 2
   memory = "2G"
 
@@ -35,7 +35,7 @@ vm {
 
 # --- Multi-node mode (uncomment and remove the vm block above) ---
 # defaults {
-#   image  = "ghcr.io/3clabs/ubuntu-cloud:24.04"
+#   image  = "nova.local/ubuntu:24.04"
 #   cpus   = 2
 #   memory = "2G"
 # }
