@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/3clabs/nova/pkg/novatest"
+	"github.com/tripleclabs/nova/pkg/novatest"
 )
 
 // TestIntegration_SingleVM_SSH boots a single Alpine VM and verifies SSH works.

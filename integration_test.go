@@ -17,7 +17,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/3clabs/nova/pkg/novatest"
+	"github.com/tripleclabs/nova/pkg/novatest"
 )
 
 // nova runs the nova binary with the given args and returns combined output.
