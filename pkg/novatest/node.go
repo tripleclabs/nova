@@ -65,6 +65,18 @@ type ExecResult struct {
 	Stderr   string
 }
 
+// ExecExpectFailure runs a command and fails the test if it exits 0.
+// Returns the full ExecResult for further inspection.
+func (n *Node) ExecExpectFailure(command string) ExecResult {
+	n.cluster.t.Helper()
+	result := n.ExecResult(command)
+	if result.ExitCode == 0 {
+		n.cluster.t.Errorf("novatest: %s: exec %q expected failure but exited 0\nstdout: %s\nstderr: %s",
+			n.Name, command, result.Stdout, result.Stderr)
+	}
+	return result
+}
+
 // Stop gracefully stops the node.
 func (n *Node) Stop() {
 	n.cluster.t.Helper()
