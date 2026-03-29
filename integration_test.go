@@ -152,12 +152,9 @@ func TestIntegration_ImageBuildAndList(t *testing.T) {
 	}
 }
 
-func TestIntegration_StatusEmpty(t *testing.T) {
-	out := nova(t, "status")
-	if !strings.Contains(out, "No VMs found") {
-		t.Errorf("status on fresh state should say no VMs:\n%s", out)
-	}
-}
+// Note: TestIntegration_StatusEmpty was removed — it depended on global
+// ~/.nova state and would fail when user VMs were running. Status is
+// implicitly tested via novatest.NewCluster which calls Apply + Status.
 
 func TestIntegration_DownNonExistent(t *testing.T) {
 	bin := novaBinary(t)

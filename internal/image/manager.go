@@ -13,9 +13,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/tripleclabs/nova/internal/distro"
+
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -77,6 +79,15 @@ func (m *Manager) ResolveImage(ref string) *CachedImage {
 	}
 	if _, err := os.Stat(ci.DiskPath); err != nil {
 		return nil
+	}
+	// Backfill OS from ref for images cached before OS tracking was added.
+	if ci.OS == "" {
+		if idx := strings.Index(ci.Ref, "/"); idx >= 0 {
+			name := ci.Ref[idx+1:]
+			if colon := strings.Index(name, ":"); colon >= 0 {
+				ci.OS = name[:colon]
+			}
+		}
 	}
 	return ci
 }

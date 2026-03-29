@@ -138,7 +138,8 @@ func (e *vzEngine) GuestIP() (string, error) {
 
 	// Try DHCP leases first (fastest, works when dhcp-identifier: mac is set),
 	// then fall back to ARP table scanning (works for any DHCP client).
-	deadline := time.Now().Add(30 * time.Second)
+	// VZ NAT typically assigns DHCP within 3-5s of boot.
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if ip, err := LookupDHCPLease(mac); err == nil && ip != "" {
 			return ip, nil

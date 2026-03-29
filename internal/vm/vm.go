@@ -232,7 +232,9 @@ func (o *Orchestrator) upNode(
 		OS:            imageOS,
 		MACAddress:    mac,
 	}
-	if isMultiNode {
+	// On Linux multi-node, assign static IPs (mcast NIC is isolated).
+	// On macOS, all VMs share the VZ NAT bridge — use DHCP and discover IPs.
+	if isMultiNode && runtime.GOOS == "linux" {
 		ciCfg.StaticIP = node.IP
 		ciCfg.Subnet = subnet
 	} else if o.sw != nil {
