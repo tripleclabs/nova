@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/3clabs/nova/internal/cmd"
+	"github.com/tripleclabs/nova/internal/cmd"
 )
 
 // version is set at build time via -ldflags.
