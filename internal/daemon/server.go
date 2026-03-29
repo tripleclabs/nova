@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -43,9 +44,10 @@ func NewServer(stateDir string, shutdownFn func()) (*Server, error) {
 	cond := network.NewConditioner()
 
 	// Attempt to start the L2 switch (Linux only; stub returns nil on other platforms).
-	sw, err := network.NewL2Switch(cond)
+	tapName := tapDeviceName(stateDir)
+	sw, err := network.NewL2Switch(cond, tapName)
 	if err != nil {
-		slog.Warn("L2 switch unavailable (missing CAP_NET_ADMIN?), falling back to SLIRP", "err", err)
+		slog.Warn("L2 switch unavailable (missing CAP_NET_ADMIN?), falling back to SLIRP", "tap", tapName, "err", err)
 		sw = nil
 	}
 
@@ -378,6 +380,17 @@ func (s *Server) resolveIP(name string) string {
 }
 
 // --- Daemon Control ---
+
+// tapDeviceName derives a unique TAP interface name from the state directory.
+// Each daemon instance gets its own device, preventing conflicts when multiple
+// daemons run concurrently (e.g., integration test parallelism or a lingering
+// daemon from a previous session). Linux interface names are limited to 15 chars;
+// "nova-" (5) + 8 hex digits = 13.
+func tapDeviceName(stateDir string) string {
+	h := fnv.New32a()
+	h.Write([]byte(stateDir))
+	return fmt.Sprintf("nova-%08x", h.Sum32())
+}
 
 func (s *Server) Shutdown(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
 	// Destroy all VMs first.

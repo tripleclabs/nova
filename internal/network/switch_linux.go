@@ -19,13 +19,14 @@ import (
 )
 
 // L2Switch is a userspace virtual Ethernet switch.
-// Each VM connects via a socketpair; the host connects via a TAP device (nova0).
+// Each VM connects via a socketpair; the host connects via a TAP device.
 type L2Switch struct {
-	mu       sync.RWMutex
-	ports    map[string]*switchPort // nodeName → port
-	macTable map[[6]byte]string     // MAC → nodeName
+	mu      sync.RWMutex
+	ports   map[string]*switchPort // nodeName → port
+	macTable map[[6]byte]string    // MAC → nodeName
 	cond     *Conditioner
 	tapFile  *os.File
+	tapName  string
 	tapMAC   net.HardwareAddr
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -36,11 +37,11 @@ type switchPort struct {
 	daemonFD *os.File // daemon side of the socketpair; switch reads from this
 }
 
-// NewL2Switch creates a new L2Switch backed by a TAP device named "nova0"
+// NewL2Switch creates a new L2Switch backed by a TAP device named tapName
 // with address 10.0.0.1/24.  Returns an error if the TAP device cannot be
 // opened (e.g. missing CAP_NET_ADMIN).
-func NewL2Switch(cond *Conditioner) (*L2Switch, error) {
-	tapFile, tapMAC, err := openTAP("nova0", "10.0.0.1", "10.0.0.0/24")
+func NewL2Switch(cond *Conditioner, tapName string) (*L2Switch, error) {
+	tapFile, tapMAC, err := openTAP(tapName, "10.0.0.1", "10.0.0.0/24")
 	if err != nil {
 		return nil, fmt.Errorf("opening nova0 TAP: %w", err)
 	}
@@ -51,12 +52,13 @@ func NewL2Switch(cond *Conditioner) (*L2Switch, error) {
 		macTable: make(map[[6]byte]string),
 		cond:     cond,
 		tapFile:  tapFile,
+		tapName:  tapName,
 		tapMAC:   tapMAC,
 		ctx:      ctx,
 		cancel:   cancel,
 	}
 
-	if err := enableNAT("10.0.0.0/24", "nova0"); err != nil {
+	if err := enableNAT("10.0.0.0/24", tapName); err != nil {
 		tapFile.Close()
 		cancel()
 		return nil, fmt.Errorf("enabling NAT: %w", err)
@@ -68,8 +70,8 @@ func NewL2Switch(cond *Conditioner) (*L2Switch, error) {
 
 // NewL2SwitchForCluster creates an L2Switch for multi-node clusters.
 // On Linux this is identical to NewL2Switch (TAP-backed).
-func NewL2SwitchForCluster(cond *Conditioner) (*L2Switch, error) {
-	return NewL2Switch(cond)
+func NewL2SwitchForCluster(cond *Conditioner, tapName string) (*L2Switch, error) {
+	return NewL2Switch(cond, tapName)
 }
 
 // NewPort allocates a socketpair for a new VM.  The QEMU-side *os.File is
@@ -117,7 +119,7 @@ func (sw *L2Switch) RemovePort(nodeName string) {
 // Close shuts down the switch (cancels reader goroutines, closes TAP, removes NAT rules).
 func (sw *L2Switch) Close() error {
 	sw.cancel()
-	disableNAT("10.0.0.0/24", "nova0")
+	disableNAT("10.0.0.0/24", sw.tapName)
 	return sw.tapFile.Close()
 }
 

@@ -128,7 +128,7 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 	// On macOS multi-node, create an in-process L2 switch for inter-VM networking.
 	// On Linux this is created eagerly by the daemon server (with TAP + NAT).
 	if isMultiNode && runtime.GOOS == "darwin" && o.sw == nil {
-		sw, err := network.NewL2SwitchForCluster(nil)
+		sw, err := network.NewL2SwitchForCluster(nil, "")
 		if err != nil {
 			return fmt.Errorf("creating L2 switch: %w", err)
 		}

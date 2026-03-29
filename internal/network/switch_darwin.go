@@ -34,13 +34,13 @@ type switchPort struct {
 // NewL2Switch returns nil on macOS — the switch is created lazily by the
 // orchestrator only when a multi-node cluster is booted. This avoids adding
 // a second NIC to single-VM configs.
-func NewL2Switch(cond *Conditioner) (*L2Switch, error) {
+func NewL2Switch(cond *Conditioner, tapName string) (*L2Switch, error) {
 	return nil, nil
 }
 
 // NewL2SwitchForCluster creates a new L2Switch for macOS multi-node clusters.
 // No TAP device or NAT is needed — VMs get internet via their NAT NIC.
-func NewL2SwitchForCluster(cond *Conditioner) (*L2Switch, error) {
+func NewL2SwitchForCluster(cond *Conditioner, tapName string) (*L2Switch, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &L2Switch{
 		ports:    make(map[string]*switchPort),
