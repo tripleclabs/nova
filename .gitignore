@@ -21,3 +21,4 @@ Thumbs.db
 
 # Integration test cache (downloaded VM images)
 .cache/
+tmp/

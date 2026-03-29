@@ -286,6 +286,7 @@ Supported output formats:
 | `raw` | Direct dd-to-disk, Apple VZ |
 | `vmdk` | VMware ESXi, Workstation, Fusion |
 | `vhdx` | Microsoft Hyper-V |
+| `ova` | VMware vSphere/ESXi, Proxmox (includes OVF descriptor) |
 
 Export automatically runs **sysprep** to clean machine-specific state (machine-id, SSH host keys, cloud-init state, DHCP leases, logs) so the image boots cleanly in a new environment. The cleanup is OS-aware — Ubuntu/Debian, Alpine, and Fedora each get appropriate treatment.
 

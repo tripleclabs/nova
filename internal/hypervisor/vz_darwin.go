@@ -6,18 +6,24 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/Code-Hex/vz/v3"
 )
 
 // vzEngine implements the Hypervisor interface using Apple's Virtualization.framework.
 type vzEngine struct {
-	mu    sync.Mutex
-	vm    *vz.VirtualMachine
-	state State
-	cfg   VMConfig
+	mu      sync.Mutex
+	vm      *vz.VirtualMachine
+	state   State
+	cfg     VMConfig
+	macAddr string // Deterministic MAC for DHCP lease lookup.
 }
 
 func newVZEngine() (Hypervisor, error) {
@@ -118,10 +124,162 @@ func (e *vzEngine) GetState() State {
 }
 
 func (e *vzEngine) GuestIP() (string, error) {
-	// VZ framework doesn't expose the guest IP directly.
-	// We'll rely on DHCP and ARP scanning, or cloud-init phone-home.
-	// For now return the common NAT gateway guest IP.
-	return "", fmt.Errorf("guest IP discovery not yet implemented for VZ engine")
+	e.mu.Lock()
+	mac := e.macAddr
+	state := e.state
+	e.mu.Unlock()
+
+	if state != StateRunning {
+		return "", fmt.Errorf("VM is not running (state: %s)", state)
+	}
+	if mac == "" {
+		return "", fmt.Errorf("no MAC address set; cannot discover guest IP")
+	}
+
+	// Try DHCP leases first (fastest, works when dhcp-identifier: mac is set),
+	// then fall back to ARP table scanning (works for any DHCP client).
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if ip, err := LookupDHCPLease(mac); err == nil && ip != "" {
+			return ip, nil
+		}
+		if ip, err := LookupARPByMAC(mac); err == nil && ip != "" {
+			return ip, nil
+		}
+		time.Sleep(time.Second)
+	}
+	return "", fmt.Errorf("guest IP not found for MAC %s after 30s (checked DHCP leases and ARP)", mac)
+}
+
+// LookupARPByMAC scans the host ARP table for a given MAC address.
+func LookupARPByMAC(mac string) (string, error) {
+	out, err := exec.Command("arp", "-a").Output()
+	if err != nil {
+		return "", fmt.Errorf("running arp -a: %w", err)
+	}
+	return ParseARPOutput(string(out), mac)
+}
+
+// ParseARPOutput parses `arp -a` output to find the IP for a given MAC.
+// Format: "? (192.168.64.3) at 52:54:0:a0:33:bd on bridge101 ifscope [bridge]"
+func ParseARPOutput(output, mac string) (string, error) {
+	normalizedMAC := strings.ToLower(mac)
+	// Also try the no-leading-zeros format (arp uses "52:54:0:a0:33:bd" not "52:54:00:a0:33:bd")
+	shortMAC := normalizeMACForDHCP(mac)
+	for _, line := range strings.Split(output, "\n") {
+		lower := strings.ToLower(line)
+		if !strings.Contains(lower, normalizedMAC) && !strings.Contains(lower, shortMAC) {
+			continue
+		}
+		start := strings.Index(line, "(")
+		end := strings.Index(line, ")")
+		if start >= 0 && end > start {
+			return line[start+1 : end], nil
+		}
+	}
+	return "", fmt.Errorf("MAC %s not found in ARP table", mac)
+}
+
+// DHCPLeasesPath is the macOS bootpd leases file. Exported for testing.
+const DHCPLeasesPath = "/var/db/dhcpd_leases"
+
+// LookupDHCPLease reads the macOS bootpd DHCP leases file and returns the
+// IP address for the given MAC. Exported for testing.
+func LookupDHCPLease(mac string) (string, error) {
+	data, err := os.ReadFile(DHCPLeasesPath)
+	if err != nil {
+		return "", fmt.Errorf("reading DHCP leases: %w", err)
+	}
+	return ParseDHCPLeases(string(data), mac)
+}
+
+// ParseDHCPLeases parses the macOS /var/db/dhcpd_leases file to find the IP
+// for a given MAC address. The file contains brace-delimited blocks with
+// key=value pairs. The hw_address field contains the MAC in a DHCP client ID
+// format where the actual hardware address appears at the end.
+//
+// Example entry:
+//
+//	{
+//	    name=my-vm
+//	    ip_address=192.168.64.3
+//	    hw_address=ff,0:0:0:2:0:1:0:1:31:5a:ff:52:52:54:0:0:0:2
+//	    lease=0x69c850e4
+//	}
+//
+// Exported for testing.
+func ParseDHCPLeases(content, mac string) (string, error) {
+	// Normalize MAC: strip leading zeros and lowercase for comparison.
+	// "52:54:00:00:00:02" → "52:54:0:0:0:2"
+	normalizedMAC := normalizeMACForDHCP(mac)
+
+	// Parse all entries and return the one with the highest lease timestamp.
+	// The file may contain multiple stale entries for the same MAC from previous boots.
+	var bestIP string
+	var bestLease uint64
+	var currentIP string
+	var currentLease uint64
+	var macMatched bool
+
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+
+		if strings.HasPrefix(line, "ip_address=") {
+			currentIP = strings.TrimPrefix(line, "ip_address=")
+		}
+		if strings.HasPrefix(line, "hw_address=") {
+			hwAddr := strings.TrimPrefix(line, "hw_address=")
+			macMatched = strings.HasSuffix(strings.ToLower(hwAddr), strings.ToLower(normalizedMAC))
+		}
+		if strings.HasPrefix(line, "lease=") {
+			leaseHex := strings.TrimPrefix(line, "lease=")
+			leaseHex = strings.TrimPrefix(leaseHex, "0x")
+			val, _ := strconv.ParseUint(leaseHex, 16, 64)
+			currentLease = val
+		}
+		if line == "}" {
+			if macMatched && currentIP != "" && currentLease >= bestLease {
+				bestIP = currentIP
+				bestLease = currentLease
+			}
+			currentIP = ""
+			currentLease = 0
+			macMatched = false
+		}
+	}
+
+	if bestIP != "" {
+		return bestIP, nil
+	}
+	return "", fmt.Errorf("MAC %s not found in DHCP leases", mac)
+}
+
+// normalizeMACForDHCP converts a MAC like "52:54:00:00:00:02" to "52:54:0:0:0:2"
+// to match the format used in macOS DHCP lease files.
+func normalizeMACForDHCP(mac string) string {
+	parts := strings.Split(mac, ":")
+	for i, p := range parts {
+		// Strip leading zeros: "00" → "0", "02" → "2"
+		val := 0
+		for _, c := range p {
+			val = val*16 + hexVal(c)
+		}
+		parts[i] = fmt.Sprintf("%x", val)
+	}
+	return strings.Join(parts, ":")
+}
+
+func hexVal(c rune) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'f':
+		return int(c-'a') + 10
+	case c >= 'A' && c <= 'F':
+		return int(c-'A') + 10
+	default:
+		return 0
+	}
 }
 
 func (e *vzEngine) buildVZConfig(cfg VMConfig) (*vz.VirtualMachineConfiguration, error) {
@@ -159,7 +317,7 @@ func (e *vzEngine) buildVZConfig(cfg VMConfig) (*vz.VirtualMachineConfiguration,
 	}
 	storageDevices := []vz.StorageDeviceConfiguration{blockDev}
 
-	// Cloud-init CIDATA ISO (optional).
+	// Cloud-init CIDATA ISO.
 	if cfg.CIDATAPath != "" {
 		cidataAttachment, err := vz.NewDiskImageStorageDeviceAttachment(cfg.CIDATAPath, true)
 		if err != nil {
@@ -182,6 +340,21 @@ func (e *vzEngine) buildVZConfig(cfg VMConfig) (*vz.VirtualMachineConfiguration,
 	if err != nil {
 		return nil, fmt.Errorf("creating network device: %w", err)
 	}
+
+	// Set deterministic MAC address for ARP-based IP discovery.
+	if cfg.Network.MACAddress != "" {
+		hwAddr, err := net.ParseMAC(cfg.Network.MACAddress)
+		if err != nil {
+			return nil, fmt.Errorf("parsing MAC address %q: %w", cfg.Network.MACAddress, err)
+		}
+		macAddr, err := vz.NewMACAddress(hwAddr)
+		if err != nil {
+			return nil, fmt.Errorf("creating VZ MAC address: %w", err)
+		}
+		netDev.SetMACAddress(macAddr)
+		e.macAddr = cfg.Network.MACAddress
+	}
+
 	vzCfg.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{netDev})
 
 	// Entropy — for /dev/random in guest.
@@ -191,13 +364,9 @@ func (e *vzEngine) buildVZConfig(cfg VMConfig) (*vz.VirtualMachineConfiguration,
 	}
 	vzCfg.SetEntropyDevicesVirtualMachineConfiguration([]*vz.VirtioEntropyDeviceConfiguration{entropy})
 
-	// Serial console — log to file.
+	// Serial console — log guest output to file.
 	if cfg.LogPath != "" {
-		serialLog, err := os.Create(cfg.LogPath)
-		if err != nil {
-			return nil, fmt.Errorf("creating serial log file: %w", err)
-		}
-		serialAttachment, err := vz.NewFileHandleSerialPortAttachment(os.Stdin, serialLog)
+		serialAttachment, err := vz.NewFileSerialPortAttachment(cfg.LogPath, false)
 		if err != nil {
 			return nil, fmt.Errorf("creating serial port attachment: %w", err)
 		}

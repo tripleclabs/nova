@@ -227,13 +227,17 @@ func mapQMPStatus(status string) State {
 }
 
 // GuestIP returns the guest IP address.
-// It queries the QEMU guest agent for an accurate result, then falls back to
-// 10.0.2.15 — the fixed address QEMU SLIRP user-mode networking always assigns.
+// For multi-node, it returns the configured static IP (on the mcast NIC).
+// For single-VM, it queries the QEMU guest agent then falls back to 10.0.2.15
+// (the fixed SLIRP address).
 func (e *qemuEngine) GuestIP() (string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.state != StateRunning {
 		return "", fmt.Errorf("VM is not running (state: %s)", e.state)
+	}
+	if e.cfg.Network.MultiNode && e.cfg.Network.StaticIP != "" {
+		return e.cfg.Network.StaticIP, nil
 	}
 	if ip, err := e.guestAgentIP(); err == nil {
 		return ip, nil
@@ -298,15 +302,35 @@ func (e *qemuEngine) buildArgs() []string {
 			fmt.Sprintf("file=%s,format=raw,if=virtio,media=cdrom", cfg.CIDATAPath))
 	}
 
-	// User-mode NAT network with optional port forwards.
-	netdev := "user,id=net0"
-	for _, pf := range cfg.Network.PortForwards {
-		netdev += fmt.Sprintf(",hostfwd=%s::%d-:%d", pf.Protocol, pf.HostPort, pf.GuestPort)
+	if cfg.Network.MultiNode {
+		// Multi-node: two NICs.
+		// NIC 1: socket multicast — virtual hub connecting all VMs (rootless).
+		mcastAddr := "230.0.0.1:1234"
+		mcastDev := fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s", cfg.Network.MACAddress)
+		args = append(args,
+			"-netdev", fmt.Sprintf("socket,id=net0,mcast=%s", mcastAddr),
+			"-device", mcastDev,
+		)
+		// NIC 2: SLIRP — host SSH access + internet + port forwarding.
+		slirp := "user,id=net1"
+		for _, pf := range cfg.Network.PortForwards {
+			slirp += fmt.Sprintf(",hostfwd=%s::%d-:%d", pf.Protocol, pf.HostPort, pf.GuestPort)
+		}
+		args = append(args,
+			"-netdev", slirp,
+			"-device", "virtio-net-pci,netdev=net1",
+		)
+	} else {
+		// Single-VM: SLIRP user-mode networking with port forwards.
+		netdev := "user,id=net0"
+		for _, pf := range cfg.Network.PortForwards {
+			netdev += fmt.Sprintf(",hostfwd=%s::%d-:%d", pf.Protocol, pf.HostPort, pf.GuestPort)
+		}
+		args = append(args,
+			"-netdev", netdev,
+			"-device", "virtio-net-pci,netdev=net0",
+		)
 	}
-	args = append(args,
-		"-netdev", netdev,
-		"-device", "virtio-net-pci,netdev=net0",
-	)
 
 	// QMP management socket for lifecycle control.
 	args = append(args,

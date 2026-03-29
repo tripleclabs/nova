@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -84,7 +85,29 @@ func runShell(cmd *cobra.Command, args []string) error {
 		sshUser = strings.TrimSpace(string(data))
 	}
 
-	return sshInteractive(guestIP, "22", sshUser, keyPath)
+	// Read SSH endpoint — may differ from guest IP for Linux multi-node.
+	sshHost := guestIP
+	sshPort := "22"
+	if data, err := os.ReadFile(filepath.Join(machineDir, "ssh_endpoint.json")); err == nil {
+		var ep struct {
+			Host string `json:"host"`
+			Port int    `json:"port"`
+		}
+		if json.Unmarshal(data, &ep) == nil {
+			if ep.Host != "" {
+				sshHost = ep.Host
+			}
+			if ep.Port > 0 {
+				sshPort = fmt.Sprintf("%d", ep.Port)
+			}
+		}
+	}
+
+	if sshHost == "" {
+		return fmt.Errorf("could not determine guest IP for %q — try 'nova down %s && nova up'", name, name)
+	}
+
+	return sshInteractive(sshHost, sshPort, sshUser, keyPath)
 }
 
 // sshInteractive launches an interactive SSH session with a PTY.

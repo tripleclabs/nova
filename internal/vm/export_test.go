@@ -35,8 +35,50 @@ func TestParseExportFormat_Valid(t *testing.T) {
 	}
 }
 
+func TestParseExportFormat_OVA(t *testing.T) {
+	got, err := ParseExportFormat("ova")
+	if err != nil {
+		t.Fatalf("ParseExportFormat(ova): %v", err)
+	}
+	if got != FormatOVA {
+		t.Errorf("got %q, want ova", got)
+	}
+}
+
+func TestExportExtension_OVA(t *testing.T) {
+	if FormatOVA.ExportExtension() != ".ova" {
+		t.Errorf("OVA extension = %q, want .ova", FormatOVA.ExportExtension())
+	}
+}
+
+func TestGenerateOVF(t *testing.T) {
+	ovf, err := generateOVF("test-vm", "test-vm.vmdk", 4, 8192, 1073741824)
+	if err != nil {
+		t.Fatalf("generateOVF: %v", err)
+	}
+	s := string(ovf)
+	if !strings.Contains(s, "test-vm") {
+		t.Error("OVF should contain VM name")
+	}
+	if !strings.Contains(s, "test-vm.vmdk") {
+		t.Error("OVF should reference VMDK filename")
+	}
+	if !strings.Contains(s, "<rasd:VirtualQuantity>4</rasd:VirtualQuantity>") {
+		t.Error("OVF should contain CPU count")
+	}
+	if !strings.Contains(s, "<rasd:VirtualQuantity>8192</rasd:VirtualQuantity>") {
+		t.Error("OVF should contain memory")
+	}
+	if !strings.Contains(s, "vmx-13") {
+		t.Error("OVF should specify virtual hardware version")
+	}
+	if !strings.Contains(s, "VmxNet3") {
+		t.Error("OVF should specify VmxNet3 network adapter")
+	}
+}
+
 func TestParseExportFormat_Invalid(t *testing.T) {
-	invalids := []string{"vdi", "ova", "iso", "", "tar.gz"}
+	invalids := []string{"vdi", "iso", "", "tar.gz"}
 	for _, s := range invalids {
 		_, err := ParseExportFormat(s)
 		if err == nil {

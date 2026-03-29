@@ -142,6 +142,46 @@ func TestBuildProfile_NoZeroByDefault(t *testing.T) {
 	assertNoStep(t, steps, "Zero free space")
 }
 
+func TestBuildProfile_NovaNetworkCleanup(t *testing.T) {
+	steps := buildProfile(OSUbuntu, Options{})
+	assertHasStep(t, steps, "Remove Nova network config")
+	assertHasStep(t, steps, "Remove cloud-init NoCloud seed")
+	assertHasStep(t, steps, "Flush ARP cache")
+}
+
+func TestBuildProfile_AlpineNetworkCleanup(t *testing.T) {
+	steps := buildProfile(OSAlpine, Options{})
+	// Alpine should clean /etc/network/interfaces.d, not netplan.
+	var found bool
+	for _, s := range steps {
+		if s.Name == "Remove Nova network config" {
+			if !strings.Contains(s.Command, "interfaces.d") {
+				t.Errorf("Alpine network cleanup should target interfaces.d, got: %s", s.Command)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected Nova network config cleanup step for Alpine")
+	}
+}
+
+func TestBuildProfile_UbuntuNetworkCleanup(t *testing.T) {
+	steps := buildProfile(OSUbuntu, Options{})
+	var found bool
+	for _, s := range steps {
+		if s.Name == "Remove Nova network config" {
+			if !strings.Contains(s.Command, "netplan") {
+				t.Errorf("Ubuntu network cleanup should target netplan, got: %s", s.Command)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected Nova network config cleanup step for Ubuntu")
+	}
+}
+
 func TestBuildProfile_UniversalStepsFirst(t *testing.T) {
 	steps := buildProfile(OSUbuntu, Options{})
 	// Universal steps (SSH keys, Nova keys, sudoers, tmp) should come before OS-specific.

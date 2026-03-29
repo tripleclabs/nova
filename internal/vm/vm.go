@@ -4,7 +4,9 @@ package vm
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -108,8 +110,11 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 		userDataPath = candidate
 	}
 
-	for _, node := range nodes {
-		if err := o.upNode(ctx, cfgPath, node, hostsEntries, userDataPath); err != nil {
+	isMultiNode := len(nodes) > 1
+	subnet := cfg.Subnet()
+
+	for i, node := range nodes {
+		if err := o.upNode(ctx, cfgPath, node, hostsEntries, userDataPath, i, isMultiNode, subnet); err != nil {
 			return fmt.Errorf("node %q: %w", node.Name, err)
 		}
 	}
@@ -123,6 +128,9 @@ func (o *Orchestrator) upNode(
 	node config.ResolvedNode,
 	hostsEntries []cloudinit.HostEntry,
 	userDataPath string,
+	nodeIndex int,
+	isMultiNode bool,
+	subnet string,
 ) error {
 	machineID := node.Name
 
@@ -198,6 +206,9 @@ func (o *Orchestrator) upNode(
 		return fmt.Errorf("generating SSH keys: %w", err)
 	}
 
+	// Generate deterministic MAC address for this node.
+	mac := generateMAC()
+
 	// Build cloud-init config.
 	needsRosetta := runtime.GOOS == "darwin" && hypervisor.NeedsEmulation(node.Arch)
 	ciCfg := cloudinit.GeneratorConfig{
@@ -207,6 +218,11 @@ func (o *Orchestrator) upNode(
 		Hosts:         hostsEntries,
 		Rosetta:       needsRosetta,
 		OS:            imageOS,
+		MACAddress:    mac,
+	}
+	if isMultiNode {
+		ciCfg.StaticIP = node.IP
+		ciCfg.Subnet = subnet
 	}
 	// Inject extra user if configured.
 	if node.User != nil {
@@ -238,8 +254,11 @@ func (o *Orchestrator) upNode(
 		return fmt.Errorf("generating cloud-init: %w", err)
 	}
 
+	// Generate network-config for multi-node static IP assignment.
+	networkConfig := cloudinit.GenerateNetworkConfig(ciCfg)
+
 	cidataPath := filepath.Join(machineDir, "cidata.iso")
-	if err := cloudinit.BuildCIDATAISO(cidataPath, node.Name, userData); err != nil {
+	if err := cloudinit.BuildCIDATAISO(cidataPath, node.Name, userData, networkConfig); err != nil {
 		o.store.Delete(machineID)
 		return fmt.Errorf("building CIDATA ISO: %w", err)
 	}
@@ -269,6 +288,23 @@ func (o *Orchestrator) upNode(
 			GuestPort: pf.Guest,
 			Protocol:  pf.Protocol,
 		})
+	}
+
+	// Multi-node networking: deterministic MAC, static IP, and auto SSH port forward.
+	vmCfg.Network.MACAddress = mac
+	if isMultiNode {
+		vmCfg.Network.MultiNode = true
+		vmCfg.Network.StaticIP = node.IP
+		vmCfg.Network.Subnet = subnet
+		// On Linux, SSH goes through SLIRP port forward (host can't reach mcast NIC).
+		if runtime.GOOS == "linux" {
+			sshHostPort := 2200 + nodeIndex
+			vmCfg.Network.PortForwards = append(vmCfg.Network.PortForwards, hypervisor.PortForward{
+				HostPort:  sshHostPort,
+				GuestPort: 22,
+				Protocol:  "tcp",
+			})
+		}
 	}
 
 	for _, sf := range node.SharedFolders {
@@ -321,6 +357,30 @@ func (o *Orchestrator) upNode(
 	}
 	os.WriteFile(filepath.Join(machineDir, "shell_user"), []byte(shellUser), 0644)
 
+	// Write SSH endpoint metadata for ExecSSH, provisioners, and nova shell.
+	sshEP := SSHEndpoint{Port: 22}
+	if isMultiNode && runtime.GOOS == "linux" {
+		// Linux multi-node: SSH through SLIRP port forward.
+		sshEP.Host = "127.0.0.1"
+		sshEP.Port = 2200 + nodeIndex
+	} else if runtime.GOOS == "linux" {
+		// Linux single-VM: SLIRP address.
+		sshEP.Host = "10.0.2.15"
+	} else {
+		// macOS: discover the guest IP from DHCP leases now that the VM has booted.
+		fmt.Printf("[%s] Discovering guest IP...\n", node.Name)
+		guestIP, err := hv.GuestIP()
+		if err != nil {
+			slog.Warn("guest IP discovery failed — VM may still be booting", "node", node.Name, "error", err)
+		} else {
+			sshEP.Host = guestIP
+			fmt.Printf("[%s] Guest IP: %s\n", node.Name, guestIP)
+		}
+	}
+	if epData, err := json.Marshal(sshEP); err == nil {
+		os.WriteFile(filepath.Join(machineDir, "ssh_endpoint.json"), epData, 0644)
+	}
+
 	fmt.Printf("%q is running.\n", node.Name)
 
 	// Run provisioners if any are defined.
@@ -336,14 +396,14 @@ func (o *Orchestrator) upNode(
 			return fmt.Errorf("reading SSH key for provisioner: %w", err)
 		}
 
-		guestIP, err := hv.GuestIP()
+		provHost, provPort, err := o.readSSHEndpoint(machineID)
 		if err != nil {
-			return fmt.Errorf("getting guest IP for provisioner: %w", err)
+			return fmt.Errorf("getting SSH endpoint for provisioner: %w", err)
 		}
 
 		sshCfg := provisioner.SSHConfig{
-			Host:       guestIP,
-			Port:       "22",
+			Host:       provHost,
+			Port:       fmt.Sprintf("%d", provPort),
 			User:       "nova",
 			PrivateKey: keyData,
 		}
@@ -511,10 +571,10 @@ func (o *Orchestrator) ExecSSH(name, command string, timeout time.Duration) (*Ex
 		return nil, fmt.Errorf("parsing SSH key: %w", err)
 	}
 
-	// Get guest IP.
-	guestIP, err := o.GuestIP(name)
+	// Get SSH endpoint.
+	sshHost, sshPort, err := o.readSSHEndpoint(name)
 	if err != nil {
-		return nil, fmt.Errorf("getting guest IP: %w", err)
+		return nil, fmt.Errorf("getting SSH endpoint: %w", err)
 	}
 
 	// Connect with timeout.
@@ -525,7 +585,7 @@ func (o *Orchestrator) ExecSSH(name, command string, timeout time.Duration) (*Ex
 		Timeout:         10 * time.Second,
 	}
 
-	addr := net.JoinHostPort(guestIP, "22")
+	addr := net.JoinHostPort(sshHost, fmt.Sprintf("%d", sshPort))
 	client, err := ssh.Dial("tcp", addr, config)
 	if err != nil {
 		return nil, fmt.Errorf("SSH dial %s: %w", addr, err)
@@ -634,6 +694,39 @@ func hashConfig(path string) string {
 	}
 	h := sha256.Sum256(data)
 	return fmt.Sprintf("%x", h[:8])
+}
+
+// generateMAC returns a random locally-administered unicast MAC address.
+// Uses the 52:54:00 prefix (QEMU convention) with 3 random bytes.
+// Each VM instance gets a unique MAC so DHCP assigns distinct IPs.
+func generateMAC() string {
+	b := make([]byte, 3)
+	rand.Read(b)
+	return fmt.Sprintf("52:54:00:%02x:%02x:%02x", b[0], b[1], b[2])
+}
+
+// SSHEndpoint describes how to reach a VM via SSH from the host.
+type SSHEndpoint struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
+}
+
+// readSSHEndpoint loads the SSH endpoint for a machine, falling back to GuestIP:22.
+func (o *Orchestrator) readSSHEndpoint(name string) (string, int, error) {
+	machineDir := o.store.MachineDir(name)
+	data, err := os.ReadFile(filepath.Join(machineDir, "ssh_endpoint.json"))
+	if err == nil {
+		var ep SSHEndpoint
+		if json.Unmarshal(data, &ep) == nil && ep.Host != "" && ep.Port > 0 {
+			return ep.Host, ep.Port, nil
+		}
+	}
+	// Fallback: use GuestIP + port 22.
+	ip, err := o.GuestIP(name)
+	if err != nil {
+		return "", 0, err
+	}
+	return ip, 22, nil
 }
 
 func sanitizeTag(guestPath string) string {

@@ -531,6 +531,54 @@ func TestGenerate_ExtraUserDefaultShell(t *testing.T) {
 	}
 }
 
+func TestGenerateNetworkConfig_MultiNode(t *testing.T) {
+	cfg := GeneratorConfig{
+		StaticIP:   "10.0.0.2",
+		Subnet:     "10.0.0.0/24",
+		MACAddress: "52:54:00:00:00:02",
+	}
+	nc := GenerateNetworkConfig(cfg)
+	if nc == nil {
+		t.Fatal("expected non-nil network config for multi-node")
+	}
+	s := string(nc)
+	if !strings.Contains(s, "version: 2") {
+		t.Error("should contain version 2")
+	}
+	if !strings.Contains(s, "52:54:00:00:00:02") {
+		t.Error("should contain MAC address")
+	}
+	if !strings.Contains(s, "10.0.0.2/24") {
+		t.Error("should contain static IP with prefix length")
+	}
+	if !strings.Contains(s, "dhcp4: false") {
+		t.Error("should disable DHCP on static NIC")
+	}
+}
+
+func TestGenerateNetworkConfig_SingleVM(t *testing.T) {
+	cfg := GeneratorConfig{
+		Hostname:      "single",
+		AuthorizedKey: "ssh-ed25519 AAAA...",
+	}
+	nc := GenerateNetworkConfig(cfg)
+	if nc != nil {
+		t.Error("single-VM should return nil network config")
+	}
+}
+
+func TestGenerateNetworkConfig_NoMAC(t *testing.T) {
+	cfg := GeneratorConfig{
+		StaticIP: "10.0.0.2",
+		Subnet:   "10.0.0.0/24",
+		// No MACAddress
+	}
+	nc := GenerateNetworkConfig(cfg)
+	if nc != nil {
+		t.Error("should return nil when no MAC address")
+	}
+}
+
 func TestGenerate_InvalidUserConfigYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yaml")

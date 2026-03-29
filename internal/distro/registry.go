@@ -31,7 +31,7 @@ var registry = map[string]Spec{
 		},
 		Profile: Profile{
 			Shell:    "/bin/bash",
-			SudoLine: "nova ALL=(ALL) NOPASSWD:ALL",
+			SudoLine: "ALL=(ALL) NOPASSWD:ALL",
 		},
 	},
 	"ubuntu:22.04": {
@@ -41,7 +41,7 @@ var registry = map[string]Spec{
 		},
 		Profile: Profile{
 			Shell:    "/bin/bash",
-			SudoLine: "nova ALL=(ALL) NOPASSWD:ALL",
+			SudoLine: "ALL=(ALL) NOPASSWD:ALL",
 		},
 	},
 	"alpine:3.21": {

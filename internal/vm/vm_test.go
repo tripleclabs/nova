@@ -1,8 +1,10 @@
 package vm
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tripleclabs/nova/internal/state"
@@ -329,5 +331,59 @@ func TestParseMemoryMB_Whitespace(t *testing.T) {
 	}
 	if got != 2048 {
 		t.Errorf("got %d, want 2048", got)
+	}
+}
+
+// --- generateMAC ---
+
+func TestGenerateMAC_Format(t *testing.T) {
+	mac := generateMAC()
+	if !strings.HasPrefix(mac, "52:54:00:") {
+		t.Errorf("MAC should start with 52:54:00:, got %q", mac)
+	}
+	if len(mac) != 17 {
+		t.Errorf("MAC should be 17 chars, got %d: %q", len(mac), mac)
+	}
+}
+
+func TestGenerateMAC_Unique(t *testing.T) {
+	seen := make(map[string]bool)
+	for i := 0; i < 100; i++ {
+		mac := generateMAC()
+		if seen[mac] {
+			t.Fatalf("duplicate MAC after %d calls: %s", i, mac)
+		}
+		seen[mac] = true
+	}
+}
+
+// --- SSHEndpoint ---
+
+func TestSSHEndpoint_ReadWrite(t *testing.T) {
+	o := newTestOrchestrator(t)
+	createMachine(t, o, "ep-test", state.StateRunning)
+
+	machineDir := o.store.MachineDir("ep-test")
+	ep := SSHEndpoint{Host: "127.0.0.1", Port: 2200}
+	data, _ := json.Marshal(ep)
+	os.WriteFile(filepath.Join(machineDir, "ssh_endpoint.json"), data, 0644)
+
+	host, port, err := o.readSSHEndpoint("ep-test")
+	if err != nil {
+		t.Fatalf("readSSHEndpoint: %v", err)
+	}
+	if host != "127.0.0.1" || port != 2200 {
+		t.Errorf("got %s:%d, want 127.0.0.1:2200", host, port)
+	}
+}
+
+func TestSSHEndpoint_FallbackToGuestIP(t *testing.T) {
+	o := newTestOrchestrator(t)
+	createMachine(t, o, "fallback", state.StateRunning)
+
+	// No ssh_endpoint.json and no hypervisor handle — should error.
+	_, _, err := o.readSSHEndpoint("fallback")
+	if err == nil {
+		t.Fatal("expected error when no endpoint file and no hypervisor")
 	}
 }

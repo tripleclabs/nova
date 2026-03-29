@@ -23,7 +23,7 @@ func newExportCmd() *cobra.Command {
 		Long: `Syspreps, shuts down, and exports a running VM's disk as a standalone
 image suitable for use on hypervisors (KVM, VMware, Hyper-V).
 
-Supported formats: qcow2 (default), raw, vmdk, vhdx
+Supported formats: qcow2 (default), raw, vmdk, vhdx, ova
 
 The export pipeline:
   1. Run sysprep to remove machine-specific state (unless --no-clean)
@@ -39,7 +39,7 @@ Examples:
 		RunE: runExport,
 	}
 
-	cmd.Flags().StringVar(&exportFormat, "format", "qcow2", "output format: qcow2, raw, vmdk, vhdx")
+	cmd.Flags().StringVar(&exportFormat, "format", "qcow2", "output format: qcow2, raw, vmdk, vhdx, ova")
 	cmd.Flags().StringVarP(&exportOutput, "output", "o", "", "output file path (default: ./<name>.<format>)")
 	cmd.Flags().BoolVar(&exportNoClean, "no-clean", false, "skip sysprep (image hygiene step)")
 	cmd.Flags().BoolVar(&exportZero, "zero", false, "zero free space before export (better compression, slower)")

@@ -5,6 +5,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -94,7 +95,7 @@ func (s *Server) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.ApplyResp
 
 	resp := &pb.ApplyResponse{}
 	for _, n := range nodes {
-		ip, _ := s.orch.GuestIP(n.Name)
+		ip := s.resolveIP(n.Name)
 		info := &pb.NodeInfo{
 			Name:         n.Name,
 			Ip:           ip,
@@ -151,7 +152,7 @@ func (s *Server) NodeStatus(ctx context.Context, req *pb.NodeRequest) (*pb.NodeS
 	}
 	for _, m := range machines {
 		if m.Name == req.Name || m.ID == req.Name {
-			ip, _ := s.orch.GuestIP(m.ID)
+			ip := s.resolveIP(m.ID)
 			return &pb.NodeStatusResponse{
 				Name:      m.Name,
 				State:     string(m.State),
@@ -170,7 +171,7 @@ func (s *Server) Status(ctx context.Context, _ *emptypb.Empty) (*pb.StatusRespon
 	}
 	resp := &pb.StatusResponse{}
 	for _, m := range machines {
-		ip, _ := s.orch.GuestIP(m.ID)
+		ip := s.resolveIP(m.ID)
 		resp.Nodes = append(resp.Nodes, &pb.NodeStatusResponse{
 			Name:      m.Name,
 			State:     string(m.State),
@@ -344,6 +345,24 @@ func (s *Server) StreamLogs(req *pb.NodeRequest, stream pb.Nova_StreamLogsServer
 
 func (s *Server) StreamEvents(_ *emptypb.Empty, stream pb.Nova_StreamEventsServer) error {
 	return status.Error(codes.Unimplemented, "StreamEvents not yet implemented")
+}
+
+// resolveIP returns the guest IP for a node, reading from ssh_endpoint.json
+// first (written during boot with the discovered IP), falling back to GuestIP().
+func (s *Server) resolveIP(name string) string {
+	// Try the endpoint file first (has the DHCP-discovered IP on macOS).
+	data, err := os.ReadFile(filepath.Join(s.stateDir, "machines", name, "ssh_endpoint.json"))
+	if err == nil {
+		var ep struct {
+			Host string `json:"host"`
+		}
+		if json.Unmarshal(data, &ep) == nil && ep.Host != "" {
+			return ep.Host
+		}
+	}
+	// Fallback to live hypervisor query.
+	ip, _ := s.orch.GuestIP(name)
+	return ip
 }
 
 // --- Daemon Control ---

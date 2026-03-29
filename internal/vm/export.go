@@ -1,13 +1,17 @@
 package vm
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"text/template"
 
 	"github.com/tripleclabs/nova/internal/sysprep"
 )
@@ -20,10 +24,11 @@ const (
 	FormatRaw   ExportFormat = "raw"
 	FormatVMDK  ExportFormat = "vmdk"
 	FormatVHDX  ExportFormat = "vhdx"
+	FormatOVA   ExportFormat = "ova"
 )
 
 // ValidExportFormats lists all supported export formats.
-var ValidExportFormats = []ExportFormat{FormatQCOW2, FormatRaw, FormatVMDK, FormatVHDX}
+var ValidExportFormats = []ExportFormat{FormatQCOW2, FormatRaw, FormatVMDK, FormatVHDX, FormatOVA}
 
 // ParseExportFormat validates and returns an ExportFormat from a string.
 func ParseExportFormat(s string) (ExportFormat, error) {
@@ -36,8 +41,10 @@ func ParseExportFormat(s string) (ExportFormat, error) {
 		return FormatVMDK, nil
 	case FormatVHDX:
 		return FormatVHDX, nil
+	case FormatOVA:
+		return FormatOVA, nil
 	default:
-		return "", fmt.Errorf("unsupported format %q (supported: qcow2, raw, vmdk, vhdx)", s)
+		return "", fmt.Errorf("unsupported format %q (supported: qcow2, raw, vmdk, vhdx, ova)", s)
 	}
 }
 
@@ -66,6 +73,9 @@ type ExportOptions struct {
 	// HasUser indicates a user block was configured. Export refuses to proceed
 	// without one to prevent leaking the internal nova user into production images.
 	HasUser bool
+	// CPUs and MemoryMB are used for OVA/OVF metadata. Defaults to 2/2048 if unset.
+	CPUs     uint
+	MemoryMB uint64
 }
 
 // ExportResult contains information about the completed export.
@@ -183,10 +193,29 @@ func (o *Orchestrator) Export(ctx context.Context, name string, opts ExportOptio
 		srcFormat = "raw"
 	}
 
-	fmt.Printf("[export] Converting %s → %s...\n", srcFormat, opts.Format)
-	if err := convertDisk(diskPath, srcFormat, outputPath, string(opts.Format)); err != nil {
-		os.Remove(outputPath) // Clean up partial file.
-		return nil, fmt.Errorf("converting disk: %w", err)
+	if opts.Format == FormatOVA {
+		// OVA is a tar archive containing an OVF descriptor + VMDK disk.
+		fmt.Printf("[export] Building OVA (VMDK + OVF descriptor)...\n")
+
+		cpus := opts.CPUs
+		if cpus == 0 {
+			cpus = 2
+		}
+		memMB := opts.MemoryMB
+		if memMB == 0 {
+			memMB = 2048
+		}
+
+		if err := buildOVA(diskPath, srcFormat, outputPath, name, cpus, memMB); err != nil {
+			os.Remove(outputPath)
+			return nil, fmt.Errorf("building OVA: %w", err)
+		}
+	} else {
+		fmt.Printf("[export] Converting %s → %s...\n", srcFormat, opts.Format)
+		if err := convertDisk(diskPath, srcFormat, outputPath, string(opts.Format)); err != nil {
+			os.Remove(outputPath) // Clean up partial file.
+			return nil, fmt.Errorf("converting disk: %w", err)
+		}
 	}
 
 	// Get output file size.
@@ -241,6 +270,210 @@ func qemuImgSnapshot(diskPath, snapName string) error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("qemu-img snapshot: %s: %w", strings.TrimSpace(stderr.String()), err)
 	}
+	return nil
+}
+
+// buildOVA creates an OVA archive containing an OVF descriptor and a VMDK disk.
+// OVA is a standard tar file (not compressed) per the OVF spec.
+func buildOVA(srcDisk, srcFormat, ovaPath, vmName string, cpus uint, memoryMB uint64) error {
+	// Create a temp dir for the intermediate VMDK and OVF.
+	tmpDir, err := os.MkdirTemp("", "nova-ova-*")
+	if err != nil {
+		return fmt.Errorf("creating temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Convert disk to VMDK (streamOptimized for efficient import).
+	vmdkName := vmName + ".vmdk"
+	vmdkPath := filepath.Join(tmpDir, vmdkName)
+	if err := convertDisk(srcDisk, srcFormat, vmdkPath, "vmdk"); err != nil {
+		return fmt.Errorf("converting to VMDK: %w", err)
+	}
+
+	vmdkInfo, err := os.Stat(vmdkPath)
+	if err != nil {
+		return fmt.Errorf("stat VMDK: %w", err)
+	}
+
+	// Generate OVF descriptor.
+	ovfName := vmName + ".ovf"
+	ovfContent, err := generateOVF(vmName, vmdkName, cpus, memoryMB, vmdkInfo.Size())
+	if err != nil {
+		return fmt.Errorf("generating OVF: %w", err)
+	}
+	ovfPath := filepath.Join(tmpDir, ovfName)
+	if err := os.WriteFile(ovfPath, ovfContent, 0644); err != nil {
+		return fmt.Errorf("writing OVF: %w", err)
+	}
+
+	// Generate manifest (SHA-256 checksums).
+	mfName := vmName + ".mf"
+	mfContent, err := generateManifest(tmpDir, []string{ovfName, vmdkName})
+	if err != nil {
+		return fmt.Errorf("generating manifest: %w", err)
+	}
+	mfPath := filepath.Join(tmpDir, mfName)
+	if err := os.WriteFile(mfPath, mfContent, 0644); err != nil {
+		return fmt.Errorf("writing manifest: %w", err)
+	}
+
+	// Bundle into OVA (tar, uncompressed, OVF first per spec).
+	return createOVATar(ovaPath, tmpDir, []string{ovfName, vmdkName, mfName})
+}
+
+// generateOVF produces an OVF 2.0 descriptor XML for VMware/Proxmox import.
+func generateOVF(vmName, vmdkFileName string, cpus uint, memoryMB uint64, vmdkSize int64) ([]byte, error) {
+	data := struct {
+		VMName       string
+		CPUs         uint
+		MemoryMB     uint64
+		VmdkFileName string
+		VmdkSize     int64
+	}{vmName, cpus, memoryMB, vmdkFileName, vmdkSize}
+
+	var buf bytes.Buffer
+	if err := ovfTemplate.Execute(&buf, data); err != nil {
+		return nil, fmt.Errorf("executing OVF template: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+var ovfTemplate = template.Must(template.New("ovf").Parse(`<?xml version="1.0" encoding="UTF-8"?>
+<Envelope xmlns="http://schemas.dmtf.org/ovf/envelope/2"
+          xmlns:rasd="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_ResourceAllocationSettingData"
+          xmlns:vssd="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_VirtualSystemSettingData"
+          xmlns:ovf="http://schemas.dmtf.org/ovf/envelope/2"
+          xmlns:vmw="http://www.vmware.com/schema/ovf">
+  <References>
+    <File ovf:href="{{.VmdkFileName}}" ovf:id="file1" ovf:size="{{.VmdkSize}}"/>
+  </References>
+  <DiskSection>
+    <Info>Virtual disk information</Info>
+    <Disk ovf:capacity="{{.VmdkSize}}" ovf:capacityAllocationUnits="byte"
+          ovf:diskId="vmdisk1" ovf:fileRef="file1" ovf:format="http://www.vmware.com/interfaces/specifications/vmdk.html#streamOptimized"/>
+  </DiskSection>
+  <NetworkSection>
+    <Info>The list of logical networks</Info>
+    <Network ovf:name="VM Network">
+      <Description>The VM Network</Description>
+    </Network>
+  </NetworkSection>
+  <VirtualSystem ovf:id="{{.VMName}}">
+    <Info>A virtual machine exported by Nova</Info>
+    <Name>{{.VMName}}</Name>
+    <OperatingSystemSection ovf:id="101">
+      <Info>The operating system</Info>
+      <Description>Linux</Description>
+    </OperatingSystemSection>
+    <VirtualHardwareSection>
+      <Info>Virtual hardware requirements</Info>
+      <System>
+        <vssd:ElementName>Virtual Hardware Family</vssd:ElementName>
+        <vssd:InstanceID>0</vssd:InstanceID>
+        <vssd:VirtualSystemType>vmx-13</vssd:VirtualSystemType>
+      </System>
+      <Item>
+        <rasd:AllocationUnits>hertz * 10^6</rasd:AllocationUnits>
+        <rasd:Description>Number of Virtual CPUs</rasd:Description>
+        <rasd:ElementName>{{.CPUs}} virtual CPU(s)</rasd:ElementName>
+        <rasd:InstanceID>1</rasd:InstanceID>
+        <rasd:ResourceType>3</rasd:ResourceType>
+        <rasd:VirtualQuantity>{{.CPUs}}</rasd:VirtualQuantity>
+      </Item>
+      <Item>
+        <rasd:AllocationUnits>byte * 2^20</rasd:AllocationUnits>
+        <rasd:Description>Memory Size</rasd:Description>
+        <rasd:ElementName>{{.MemoryMB}}MB of memory</rasd:ElementName>
+        <rasd:InstanceID>2</rasd:InstanceID>
+        <rasd:ResourceType>4</rasd:ResourceType>
+        <rasd:VirtualQuantity>{{.MemoryMB}}</rasd:VirtualQuantity>
+      </Item>
+      <Item>
+        <rasd:AddressOnParent>0</rasd:AddressOnParent>
+        <rasd:ElementName>Hard Disk 1</rasd:ElementName>
+        <rasd:HostResource>ovf:/disk/vmdisk1</rasd:HostResource>
+        <rasd:InstanceID>3</rasd:InstanceID>
+        <rasd:ResourceType>17</rasd:ResourceType>
+      </Item>
+      <Item>
+        <rasd:AutomaticAllocation>true</rasd:AutomaticAllocation>
+        <rasd:Connection>VM Network</rasd:Connection>
+        <rasd:Description>VmxNet3 ethernet adapter</rasd:Description>
+        <rasd:ElementName>Network adapter 1</rasd:ElementName>
+        <rasd:InstanceID>4</rasd:InstanceID>
+        <rasd:ResourceSubType>VmxNet3</rasd:ResourceSubType>
+        <rasd:ResourceType>10</rasd:ResourceType>
+      </Item>
+    </VirtualHardwareSection>
+  </VirtualSystem>
+</Envelope>
+`))
+
+// generateManifest creates an OVF manifest file with SHA-256 checksums.
+func generateManifest(dir string, files []string) ([]byte, error) {
+	var buf bytes.Buffer
+	for _, name := range files {
+		hash, err := sha256File(filepath.Join(dir, name))
+		if err != nil {
+			return nil, fmt.Errorf("hashing %s: %w", name, err)
+		}
+		fmt.Fprintf(&buf, "SHA256(%s)= %s\n", name, hash)
+	}
+	return buf.Bytes(), nil
+}
+
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// createOVATar bundles files into an OVA (uncompressed tar, OVF first per spec).
+func createOVATar(ovaPath, srcDir string, files []string) error {
+	outFile, err := os.Create(ovaPath)
+	if err != nil {
+		return fmt.Errorf("creating OVA file: %w", err)
+	}
+	defer outFile.Close()
+
+	tw := tar.NewWriter(outFile)
+	defer tw.Close()
+
+	for _, name := range files {
+		path := filepath.Join(srcDir, name)
+		fi, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", name, err)
+		}
+
+		header, err := tar.FileInfoHeader(fi, "")
+		if err != nil {
+			return fmt.Errorf("tar header for %s: %w", name, err)
+		}
+		header.Name = name
+
+		if err := tw.WriteHeader(header); err != nil {
+			return fmt.Errorf("writing tar header for %s: %w", name, err)
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("opening %s: %w", name, err)
+		}
+		if _, err := io.Copy(tw, f); err != nil {
+			f.Close()
+			return fmt.Errorf("writing %s to tar: %w", name, err)
+		}
+		f.Close()
+	}
+
 	return nil
 }
 

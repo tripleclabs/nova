@@ -144,6 +144,11 @@ func buildProfile(family OSFamily, opts Options) []Step {
 		Step{"Remove Nova authorized keys", "sudo rm -f /home/nova/.ssh/authorized_keys /root/.ssh/authorized_keys"},
 		Step{"Remove Nova sudoers/doas config", removeSudoersCommand(family)},
 		Step{"Clear temp directories", "sudo rm -rf /tmp/* /var/tmp/*"},
+		// Remove Nova multi-node networking artifacts.
+		Step{"Remove Nova network config", removeNovaNetworkCommand(family)},
+		Step{"Remove cloud-init NoCloud seed", "sudo rm -rf /var/lib/cloud/seed/nocloud* 2>/dev/null || true"},
+		Step{"Remove Nova /etc/hosts entries", "sudo sed -i '/# nova-managed/d' /etc/hosts 2>/dev/null || true"},
+		Step{"Flush ARP cache", "sudo ip neigh flush all 2>/dev/null || true"},
 	)
 
 	// --- OS-specific steps ---
@@ -156,7 +161,7 @@ func buildProfile(family OSFamily, opts Options) []Step {
 			Step{"Clean apt cache", "sudo apt-get clean && sudo rm -rf /var/lib/apt/lists/*"},
 			Step{"Flush and vacuum journald", "sudo journalctl --flush --rotate --vacuum-time=1s 2>/dev/null || true"},
 			Step{"Truncate log files", "sudo find /var/log -type f -exec truncate -s 0 {} \\;"},
-			Step{"Remove netplan generated config", "sudo rm -f /etc/netplan/50-cloud-init.yaml 2>/dev/null || true"},
+			Step{"Remove netplan generated configs", "sudo rm -f /etc/netplan/50-cloud-init.yaml /etc/netplan/90-nova-static.yaml 2>/dev/null || true"},
 			Step{"Remove DHCP leases", "sudo rm -f /var/lib/dhcp/* /var/lib/NetworkManager/*.lease 2>/dev/null || true"},
 			Step{"Remove udev persistent rules", "sudo rm -f /etc/udev/rules.d/70-persistent-* 2>/dev/null || true"},
 			Step{"Clear bash history", "sudo find /home /root -maxdepth 2 -name '.bash_history' -delete 2>/dev/null || true"},
@@ -215,6 +220,16 @@ func buildProfile(family OSFamily, opts Options) []Step {
 	}
 
 	return steps
+}
+
+func removeNovaNetworkCommand(family OSFamily) string {
+	switch family {
+	case OSAlpine:
+		return "sudo rm -f /etc/network/interfaces.d/nova-* 2>/dev/null || true"
+	default:
+		// Ubuntu/Debian/Fedora: remove Nova-generated netplan configs.
+		return "sudo rm -f /etc/netplan/90-nova-static.yaml 2>/dev/null || true"
+	}
 }
 
 func removeSudoersCommand(family OSFamily) string {

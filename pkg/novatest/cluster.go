@@ -96,8 +96,14 @@ func NewCluster(t testing.TB, opts ...ClusterOption) *Cluster {
 		hcl = string(data)
 	}
 
-	// Isolated state directory per test.
-	stateDir := t.TempDir()
+	// Use a short temp dir to avoid macOS 104-byte Unix socket path limit.
+	// t.TempDir() produces paths like /var/folders/.../TestIntegration_MultiNode.../001/
+	// which exceed the limit when daemon.sock is appended.
+	stateDir, err := os.MkdirTemp("/tmp", "nova-t-")
+	if err != nil {
+		t.Fatalf("novatest: creating temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(stateDir) })
 
 	// Symlink the shared image cache so we don't re-download images.
 	home, _ := os.UserHomeDir()
@@ -259,11 +265,13 @@ func (c *Cluster) Restore(name string) {
 func (c *Cluster) startDaemon() {
 	c.t.Helper()
 
-	// Find the nova binary.
-	novaBin, err := exec.LookPath("nova")
-	if err != nil {
-		// Fall back to building from source.
+	// Always build from source to avoid picking up unrelated binaries
+	// with the same name (e.g., the Panic Nova text editor on macOS).
+	// Use NOVA_BIN env var to override if a pre-built binary is available.
+	novaBin := os.Getenv("NOVA_BIN")
+	if novaBin == "" {
 		novaBin = filepath.Join(os.TempDir(), "nova-test-"+fmt.Sprintf("%d", os.Getpid()))
+		c.t.Logf("novatest: building nova binary at %s", novaBin)
 		build := exec.Command("go", "build", "-o", novaBin, "./cmd/nova/")
 		if out, err := build.CombinedOutput(); err != nil {
 			c.t.Fatalf("novatest: building nova: %s\n%s", err, out)

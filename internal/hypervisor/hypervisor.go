@@ -35,6 +35,10 @@ type VMConfig struct {
 // NetworkConfig describes the VM's network setup.
 type NetworkConfig struct {
 	PortForwards []PortForward
+	MACAddress   string // Deterministic MAC for IP discovery (e.g., "52:54:00:00:00:02").
+	StaticIP     string // Static IP to assign in guest for multi-node (e.g., "10.0.0.2").
+	Subnet       string // CIDR for the multi-node LAN (e.g., "10.0.0.0/24").
+	MultiNode    bool   // When true, use multi-node networking (mcast on Linux, shared NAT on macOS).
 }
 
 // PortForward maps a host port to a guest port.

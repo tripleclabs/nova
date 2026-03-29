@@ -12,7 +12,7 @@ func TestBuildCIDATAISO(t *testing.T) {
 	isoPath := filepath.Join(dir, "cidata.iso")
 
 	userData := []byte("#cloud-config\nhostname: test-vm\n")
-	if err := BuildCIDATAISO(isoPath, "test-vm", userData); err != nil {
+	if err := BuildCIDATAISO(isoPath, "test-vm", userData, nil); err != nil {
 		t.Fatalf("BuildCIDATAISO: %v", err)
 	}
 
@@ -34,7 +34,7 @@ func TestBuildCIDATAISO_ContainsFiles(t *testing.T) {
 	isoPath := filepath.Join(dir, "cidata.iso")
 
 	userData := []byte("#cloud-config\nhostname: verify-vm\n")
-	if err := BuildCIDATAISO(isoPath, "verify-vm", userData); err != nil {
+	if err := BuildCIDATAISO(isoPath, "verify-vm", userData, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -64,7 +64,7 @@ func TestBuildCIDATAISO_EmptyHostname(t *testing.T) {
 	isoPath := filepath.Join(dir, "cidata.iso")
 
 	userData := []byte("#cloud-config\nhostname: \"\"\n")
-	if err := BuildCIDATAISO(isoPath, "", userData); err != nil {
+	if err := BuildCIDATAISO(isoPath, "", userData, nil); err != nil {
 		t.Fatalf("BuildCIDATAISO with empty hostname: %v", err)
 	}
 
@@ -103,7 +103,7 @@ func TestBuildCIDATAISO_LargeUserData(t *testing.T) {
 		large = append(large, []byte(line)...)
 	}
 
-	if err := BuildCIDATAISO(isoPath, "large-vm", large); err != nil {
+	if err := BuildCIDATAISO(isoPath, "large-vm", large, nil); err != nil {
 		t.Fatalf("BuildCIDATAISO with large user data: %v", err)
 	}
 
@@ -133,7 +133,7 @@ func TestBuildCIDATAISO_LargeUserData(t *testing.T) {
 
 func TestBuildCIDATAISO_InvalidPath(t *testing.T) {
 	userData := []byte("#cloud-config\nhostname: test\n")
-	err := BuildCIDATAISO("/nonexistent/dir/cidata.iso", "test", userData)
+	err := BuildCIDATAISO("/nonexistent/dir/cidata.iso", "test", userData, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid output path")
 	}

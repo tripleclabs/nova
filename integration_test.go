@@ -9,7 +9,6 @@
 package nova_test
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,7 +16,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/3clabs/nova/pkg/novatest"
 )
 
 // nova runs the nova binary with the given args and returns combined output.
@@ -67,7 +67,6 @@ func projectRoot(t *testing.T) string {
 }
 
 // alpineImageURL returns the appropriate Alpine generic cloud-init image for the host arch.
-// Uses UEFI boot (required for Apple VZ) and standard cloud-init (not tiny).
 func alpineImageURL() string {
 	switch runtime.GOARCH {
 	case "arm64":
@@ -78,19 +77,16 @@ func alpineImageURL() string {
 }
 
 // alpineImagePath returns a persistent path for the downloaded Alpine image.
-// Stored alongside the project so it survives across test runs.
 func alpineImagePath(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(projectRoot(t), ".cache", "alpine-cloudinit.qcow2")
 }
 
 // ensureAlpineImage downloads the Alpine cloud image (if needed) and builds it
-// into the nova cache. The raw download is persisted in .cache/ so subsequent
-// runs skip the download entirely.
+// into the nova cache.
 func ensureAlpineImage(t *testing.T) {
 	t.Helper()
 
-	// Check if already in nova cache.
 	out := nova(t, "image", "list")
 	if strings.Contains(out, "nova.local/alpine:3.21") {
 		t.Log("Alpine image already in nova cache")
@@ -99,7 +95,6 @@ func ensureAlpineImage(t *testing.T) {
 
 	imgPath := alpineImagePath(t)
 
-	// Download if not already on disk.
 	if _, err := os.Stat(imgPath); err != nil {
 		os.MkdirAll(filepath.Dir(imgPath), 0755)
 		t.Logf("Downloading Alpine cloud image to %s ...", imgPath)
@@ -113,7 +108,6 @@ func ensureAlpineImage(t *testing.T) {
 		t.Log("Alpine image already downloaded, building into cache...")
 	}
 
-	// Build into nova cache.
 	nova(t, "image", "build", imgPath, "--tag", "nova.local/alpine:3.21")
 
 	out = nova(t, "image", "list")
@@ -122,30 +116,12 @@ func ensureAlpineImage(t *testing.T) {
 	}
 }
 
-// writeTestConfig writes a nova.hcl for integration testing.
-func writeTestConfig(t *testing.T, dir string) {
-	t.Helper()
-	hcl := `
-vm {
-  name   = "integration-test"
-  image  = "nova.local/alpine:3.21"
-  cpus   = 2
-  memory = "1G"
-}
-`
-	if err := os.WriteFile(filepath.Join(dir, "nova.hcl"), []byte(hcl), 0644); err != nil {
-		t.Fatal(err)
-	}
-}
+// --- CLI tests (no VMs needed) ---
 
-// --- Integration tests ---
-
-func TestIntegration_ImageBuildAndList(t *testing.T) {
-	ensureAlpineImage(t)
-
-	out := nova(t, "image", "list")
-	if !strings.Contains(out, "nova.local/alpine:3.21") {
-		t.Errorf("image list should contain alpine:\n%s", out)
+func TestIntegration_Version(t *testing.T) {
+	out := nova(t, "version")
+	if !strings.Contains(out, "nova") {
+		t.Errorf("version output: %s", out)
 	}
 }
 
@@ -167,6 +143,15 @@ func TestIntegration_InitGeneratesConfig(t *testing.T) {
 	}
 }
 
+func TestIntegration_ImageBuildAndList(t *testing.T) {
+	ensureAlpineImage(t)
+
+	out := nova(t, "image", "list")
+	if !strings.Contains(out, "nova.local/alpine:3.21") {
+		t.Errorf("image list should contain alpine:\n%s", out)
+	}
+}
+
 func TestIntegration_StatusEmpty(t *testing.T) {
 	out := nova(t, "status")
 	if !strings.Contains(out, "No VMs found") {
@@ -174,69 +159,19 @@ func TestIntegration_StatusEmpty(t *testing.T) {
 	}
 }
 
-func TestIntegration_FullLifecycle(t *testing.T) {
-	ensureAlpineImage(t)
-
-	dir := t.TempDir()
-	writeTestConfig(t, dir)
-
+func TestIntegration_DownNonExistent(t *testing.T) {
 	bin := novaBinary(t)
-
-	// nova up — start the VM in background (it blocks, so run async).
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	upCmd := exec.CommandContext(ctx, bin, "up", "--config", filepath.Join(dir, "nova.hcl"))
-	upCmd.Stdout = os.Stdout
-	upCmd.Stderr = os.Stderr
-
-	if err := upCmd.Start(); err != nil {
-		t.Fatalf("nova up start: %v", err)
+	cmd := exec.Command(bin, "down", "does-not-exist")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("down non-existent should fail")
 	}
-
-	// Poll status until we see the VM or timeout.
-	var statusOut string
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		cmd := exec.Command(bin, "status")
-		out, _ := cmd.CombinedOutput()
-		statusOut = string(out)
-		if strings.Contains(statusOut, "integration-test") {
-			break
-		}
-		time.Sleep(time.Second)
-	}
-
-	if !strings.Contains(statusOut, "integration-test") {
-		t.Logf("status output: %s", statusOut)
-		t.Fatal("VM 'integration-test' never appeared in status")
-	}
-	t.Logf("VM appeared in status:\n%s", statusOut)
-
-	// nova nuke — clean up regardless of state.
-	nukeCmd := exec.Command(bin, "nuke", "integration-test")
-	nukeOut, err := nukeCmd.CombinedOutput()
-	if err != nil {
-		t.Logf("nova nuke output: %s", nukeOut)
-	} else {
-		t.Logf("Nuked: %s", nukeOut)
-	}
-
-	// Kill the up process if still running.
-	if upCmd.Process != nil {
-		upCmd.Process.Kill()
-	}
-
-	// Verify it's gone.
-	finalStatus := nova(t, "status")
-	if strings.Contains(finalStatus, "integration-test") {
-		t.Error("VM should be gone after nuke")
-	}
+	_ = fmt.Sprintf("%s", out)
 }
 
+// --- Snapshot tests (need qemu-img, not full VMs) ---
+
 func TestIntegration_SnapshotLifecycle(t *testing.T) {
-	// Create a machine with a real qcow2 disk for snapshot testing.
-	// Doesn't need a running VM — just state + disk.
 	home, _ := os.UserHomeDir()
 	novaDir := filepath.Join(home, ".nova")
 	machineDir := filepath.Join(novaDir, "machines", "snap-test")
@@ -253,7 +188,6 @@ func TestIntegration_SnapshotLifecycle(t *testing.T) {
 	os.WriteFile(filepath.Join(machineDir, "machine.json"), []byte(stateJSON), 0644)
 
 	bin := novaBinary(t)
-
 	run := func(args ...string) string {
 		c := exec.Command(bin, args...)
 		out, err := c.CombinedOutput()
@@ -291,7 +225,6 @@ func TestIntegration_SnapshotLifecycle(t *testing.T) {
 
 func TestIntegration_LinkCommands(t *testing.T) {
 	bin := novaBinary(t)
-
 	run := func(args ...string) string {
 		c := exec.Command(bin, args...)
 		out, _ := c.CombinedOutput()
@@ -324,11 +257,34 @@ func TestIntegration_LinkCommands(t *testing.T) {
 	}
 }
 
-func TestIntegration_Version(t *testing.T) {
-	out := nova(t, "version")
-	if !strings.Contains(out, "nova") {
-		t.Errorf("version output: %s", out)
+// --- VM lifecycle tests (using novatest SDK) ---
+
+func TestIntegration_FullLifecycle(t *testing.T) {
+	ensureAlpineImage(t)
+
+	cluster := novatest.NewCluster(t, novatest.WithHCL(`
+		vm {
+			name   = "lifecycle-test"
+			image  = "alpine:3.21"
+			cpus   = 2
+			memory = "1G"
+		}
+	`))
+	cluster.WaitReady()
+
+	// Verify the VM is running and reachable.
+	out := cluster.Node("lifecycle-test").Exec("echo alive")
+	if !strings.Contains(out, "alive") {
+		t.Errorf("VM not reachable: %q", out)
 	}
+
+	// Stop and verify.
+	cluster.Node("lifecycle-test").Stop()
+	if cluster.Node("lifecycle-test").IsRunning() {
+		t.Error("VM should be stopped after Stop()")
+	}
+
+	// Cleanup is automatic via t.Cleanup().
 }
 
 func TestIntegration_NukeNonExistent(t *testing.T) {
@@ -341,14 +297,4 @@ func TestIntegration_NukeNonExistent(t *testing.T) {
 	if !strings.Contains(string(out), "not found") {
 		t.Errorf("expected 'not found' in error: %s", out)
 	}
-}
-
-func TestIntegration_DownNonExistent(t *testing.T) {
-	bin := novaBinary(t)
-	cmd := exec.Command(bin, "down", "does-not-exist")
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatal("down non-existent should fail")
-	}
-	_ = fmt.Sprintf("%s", out)
 }

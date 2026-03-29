@@ -13,6 +13,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/tripleclabs/nova/pkg/novapb/nova/v1"
 )
@@ -38,7 +39,32 @@ func daemonClient() (pb.NovaClient, *grpc.ClientConn, error) {
 		return nil, nil, fmt.Errorf("connecting to daemon: %w", err)
 	}
 
-	return pb.NewNovaClient(conn), conn, nil
+	// Verify the connection is actually alive. If the daemon crashed and left
+	// a stale socket, NewClient succeeds but RPCs will fail with "connection refused".
+	// Do a quick health check — if it fails, restart the daemon.
+	client := pb.NewNovaClient(conn)
+	checkCtx, checkCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, checkErr := client.Status(checkCtx, &emptypb.Empty{})
+	checkCancel()
+	if checkErr != nil {
+		conn.Close()
+		// Stale socket — remove it and start a fresh daemon.
+		os.Remove(socketPath)
+		os.Remove(filepath.Join(stateDir, "daemon.pid"))
+		if err := startDaemon(stateDir); err != nil {
+			return nil, nil, fmt.Errorf("restarting daemon after stale socket: %w", err)
+		}
+		conn, err = grpc.NewClient(
+			"unix://"+socketPath,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("connecting to restarted daemon: %w", err)
+		}
+		client = pb.NewNovaClient(conn)
+	}
+
+	return client, conn, nil
 }
 
 // startDaemon launches `nova daemon` as a background process and waits

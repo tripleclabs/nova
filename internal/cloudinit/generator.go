@@ -3,6 +3,7 @@ package cloudinit
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/tripleclabs/nova/internal/distro"
 	"gopkg.in/yaml.v3"
@@ -44,6 +45,9 @@ type GeneratorConfig struct {
 	Rosetta       bool          // Enable Rosetta 2 binfmt_misc registration in the guest.
 	OS            string        // OS identifier (e.g. "ubuntu", "alpine"); empty = generic defaults.
 	ExtraUser     *UserConfig   // Optional non-Nova user to create alongside the internal nova user.
+	StaticIP      string        // Static IP for multi-node guest NIC (e.g., "10.0.0.2").
+	Subnet        string        // CIDR subnet for multi-node (e.g., "10.0.0.0/24").
+	MACAddress    string        // MAC address of the multi-node NIC (for network-config matching).
 }
 
 // Generate merges Nova's required defaults with a user-provided cloud-config.
@@ -195,6 +199,50 @@ func profileForOS(os string) distro.Profile {
 		return distro.ProfileFor("") // returns generic defaults
 	}
 	return distro.ProfileFor(os)
+}
+
+// GenerateNetworkConfig produces a cloud-init network-config v2 YAML document.
+// For multi-node (StaticIP set): assigns the static IP on the MAC-matched NIC.
+// For single-VM: enables DHCP on the MAC-matched NIC (ensures the NIC is
+// configured regardless of interface naming).
+// Returns nil only if no MACAddress is set.
+func GenerateNetworkConfig(cfg GeneratorConfig) []byte {
+	if cfg.MACAddress == "" {
+		return nil
+	}
+
+	if cfg.StaticIP != "" {
+		// Multi-node: static IP on the cluster NIC.
+		prefixLen := "24"
+		if cfg.Subnet != "" {
+			if parts := strings.SplitN(cfg.Subnet, "/", 2); len(parts) == 2 {
+				prefixLen = parts[1]
+			}
+		}
+		config := fmt.Sprintf(`version: 2
+ethernets:
+  nova0:
+    match:
+      macaddress: "%s"
+    addresses:
+      - %s/%s
+    dhcp4: false
+`, strings.ToLower(cfg.MACAddress), cfg.StaticIP, prefixLen)
+		return []byte(config)
+	}
+
+	// Single-VM: DHCP on our NIC, matched by MAC.
+	// dhcp-identifier: mac ensures the DHCP client sends the hardware MAC
+	// (not a DUID), so macOS bootpd stores it and we can look up the IP.
+	config := fmt.Sprintf(`version: 2
+ethernets:
+  nova0:
+    match:
+      macaddress: "%s"
+    dhcp4: true
+    dhcp-identifier: mac
+`, strings.ToLower(cfg.MACAddress))
+	return []byte(config)
 }
 
 func loadUserConfig(path string) (CloudConfig, error) {
