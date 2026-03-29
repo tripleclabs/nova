@@ -1,0 +1,225 @@
+syntax = "proto3";
+package nova.v1;
+
+option go_package = "github.com/3clabs/nova/pkg/novapb";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+service Nova {
+  // --- Cluster Lifecycle ---
+
+  // Apply boots all nodes defined in the provided HCL configuration.
+  rpc Apply(ApplyRequest) returns (ApplyResponse);
+
+  // Destroy tears down all (or a specific) node and cleans up state.
+  rpc Destroy(DestroyRequest) returns (google.protobuf.Empty);
+
+  // --- Node Control ---
+
+  // NodeStop gracefully stops a single node.
+  rpc NodeStop(NodeRequest) returns (google.protobuf.Empty);
+
+  // NodeStart starts a previously stopped node.
+  rpc NodeStart(NodeRequest) returns (google.protobuf.Empty);
+
+  // NodeKill force-terminates a node (simulates power failure).
+  // State is preserved but marked as error.
+  rpc NodeKill(NodeRequest) returns (google.protobuf.Empty);
+
+  // NodeStatus returns the current state of a single node.
+  rpc NodeStatus(NodeRequest) returns (NodeStatusResponse);
+
+  // Status returns the state of all managed nodes.
+  rpc Status(google.protobuf.Empty) returns (StatusResponse);
+
+  // --- Network Chaos ---
+
+  // LinkDegrade sets latency, jitter, and/or packet loss between two nodes.
+  rpc LinkDegrade(LinkDegradeRequest) returns (google.protobuf.Empty);
+
+  // LinkPartition creates a hard network partition between two nodes.
+  rpc LinkPartition(LinkPairRequest) returns (google.protobuf.Empty);
+
+  // LinkHeal removes all network conditions between two nodes.
+  rpc LinkHeal(LinkPairRequest) returns (google.protobuf.Empty);
+
+  // LinkReset removes all network conditions across the cluster.
+  rpc LinkReset(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+  // LinkStatus returns all active network conditions.
+  rpc LinkStatus(google.protobuf.Empty) returns (LinkStatusResponse);
+
+  // --- Export ---
+
+  // Export syspreps, shuts down, and exports a VM disk as a standalone image.
+  rpc Export(ExportRequest) returns (ExportResponse);
+
+  // --- Snapshots ---
+
+  // SnapshotSave saves a named snapshot of all nodes.
+  rpc SnapshotSave(SnapshotRequest) returns (google.protobuf.Empty);
+
+  // SnapshotRestore reverts all nodes to a saved snapshot.
+  rpc SnapshotRestore(SnapshotRequest) returns (google.protobuf.Empty);
+
+  // SnapshotList returns all saved snapshots.
+  rpc SnapshotList(google.protobuf.Empty) returns (SnapshotListResponse);
+
+  // SnapshotDelete removes a saved snapshot.
+  rpc SnapshotDelete(SnapshotRequest) returns (google.protobuf.Empty);
+
+  // --- SSH Exec ---
+
+  // Exec runs a command on a node via SSH and returns the result.
+  rpc Exec(ExecRequest) returns (ExecResponse);
+
+  // WaitReady blocks until a node is reachable via SSH (or timeout).
+  rpc WaitReady(WaitReadyRequest) returns (google.protobuf.Empty);
+
+  // --- Streaming ---
+
+  // StreamLogs streams serial console output from a node.
+  rpc StreamLogs(NodeRequest) returns (stream LogEntry);
+
+  // StreamEvents streams cluster-wide events (state changes, chaos, etc).
+  rpc StreamEvents(google.protobuf.Empty) returns (stream ClusterEvent);
+
+  // --- Daemon Control ---
+
+  // Shutdown gracefully shuts down the daemon, stopping all VMs first.
+  rpc Shutdown(google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+// --- Request/Response Messages ---
+
+message ApplyRequest {
+  // Inline HCL configuration content (not a file path, for isolation).
+  string hcl_config = 1;
+  // Optional path to a user cloud-config.yaml.
+  string cloud_config_path = 2;
+}
+
+message ApplyResponse {
+  repeated NodeInfo nodes = 1;
+}
+
+message NodeInfo {
+  string name = 1;
+  string ip = 2;
+  string state = 3;
+  string os = 4;  // Detected OS family (e.g. "ubuntu", "alpine").
+  map<int32, int32> port_forwards = 5;  // host_port -> guest_port
+}
+
+message DestroyRequest {
+  // If empty, destroy all nodes. If set, destroy only this node.
+  string name = 1;
+  // Force-kill rather than graceful stop.
+  bool force = 2;
+}
+
+message NodeRequest {
+  string name = 1;
+}
+
+message NodeStatusResponse {
+  string name = 1;
+  string state = 2;
+  string ip = 3;
+  string os = 4;
+  google.protobuf.Timestamp started_at = 5;
+}
+
+message StatusResponse {
+  repeated NodeStatusResponse nodes = 1;
+}
+
+message LinkDegradeRequest {
+  string node_a = 1;
+  string node_b = 2;
+  google.protobuf.Duration latency = 3;
+  google.protobuf.Duration jitter = 4;
+  double loss = 5;  // 0.0 to 1.0
+}
+
+message LinkPairRequest {
+  string node_a = 1;
+  string node_b = 2;
+}
+
+message LinkStatusResponse {
+  repeated LinkCondition conditions = 1;
+}
+
+message LinkCondition {
+  string node_a = 1;
+  string node_b = 2;
+  google.protobuf.Duration latency = 3;
+  google.protobuf.Duration jitter = 4;
+  double loss = 5;
+  bool partitioned = 6;
+}
+
+message SnapshotRequest {
+  string name = 1;
+}
+
+message SnapshotListResponse {
+  repeated SnapshotInfo snapshots = 1;
+}
+
+message SnapshotInfo {
+  string name = 1;
+  int32 machine_count = 2;
+  google.protobuf.Timestamp created_at = 3;
+}
+
+message ExportRequest {
+  string name = 1;            // VM/node name to export.
+  string format = 2;          // Output format: "qcow2", "raw", "vmdk", "vhdx".
+  string output_path = 3;     // Destination file path.
+  bool no_clean = 4;          // Skip sysprep.
+  bool zero_free_space = 5;   // Zero free space before export.
+  string snapshot_name = 6;   // If set, take a pre-sysprep snapshot for rollback.
+}
+
+message ExportResponse {
+  string output_path = 1;
+  string format = 2;
+  int64 size_bytes = 3;
+}
+
+message ExecRequest {
+  string node = 1;
+  string command = 2;
+  google.protobuf.Duration timeout = 3;
+}
+
+message ExecResponse {
+  int32 exit_code = 1;
+  string stdout = 2;
+  string stderr = 3;
+}
+
+message WaitReadyRequest {
+  string node = 1;
+  google.protobuf.Duration timeout = 2;
+}
+
+message LogEntry {
+  string node = 1;
+  string line = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+message ClusterEvent {
+  // Event types: "node_starting", "node_running", "node_stopped",
+  // "node_error", "link_degraded", "link_partitioned", "link_healed",
+  // "snapshot_saved", "snapshot_restored"
+  string type = 1;
+  string node = 2;
+  string detail = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}

@@ -1,5 +1,5 @@
-# Binary
-nova
+# Binary (root only, not proto/nova/)
+/nova
 
 # Test
 *.test
