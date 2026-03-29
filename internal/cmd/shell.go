@@ -121,26 +121,27 @@ func sshInteractive(host, port, user, keyPath string) error {
 		fmt.Sprintf("%s@%s", user, host),
 	}
 
-	var lastErr error
 	for attempt := 0; attempt < 30; attempt++ {
 		ssh := exec.Command("ssh", sshArgs...)
 		ssh.Stdin = os.Stdin
 		ssh.Stdout = os.Stdout
 		ssh.Stderr = os.Stderr
 
-		lastErr = ssh.Run()
-		if lastErr == nil {
+		err := ssh.Run()
+		if err == nil {
 			return nil
 		}
 
-		// If the user exited an interactive session, don't retry.
-		if attempt > 0 {
-			return lastErr
+		// SSH exit 255 means a connection-level failure (host unreachable, refused,
+		// timeout). Keep retrying. Any other exit code means the remote session or
+		// command ended — return immediately without retrying.
+		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 255 {
+			return err
 		}
 
 		fmt.Fprintf(os.Stderr, "Waiting for SSH... (attempt %d/30)\n", attempt+1)
 		time.Sleep(2 * time.Second)
 	}
 
-	return fmt.Errorf("SSH connection failed after 30 attempts: %w", lastErr)
+	return fmt.Errorf("SSH connection failed after 30 attempts")
 }

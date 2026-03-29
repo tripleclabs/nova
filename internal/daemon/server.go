@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,7 @@ type Server struct {
 	pb.UnimplementedNovaServer
 	orch        *vm.Orchestrator
 	conditioner *network.Conditioner
+	sw          *network.L2Switch
 	snapMgr     *snapshot.Manager
 	stateDir    string
 	shutdownFn  func() // called by the Shutdown RPC
@@ -38,7 +40,16 @@ type Server struct {
 
 // NewServer creates a daemon Server backed by the given state directory.
 func NewServer(stateDir string, shutdownFn func()) (*Server, error) {
-	orch, err := vm.NewOrchestratorWithDir(stateDir)
+	cond := network.NewConditioner()
+
+	// Attempt to start the L2 switch (Linux only; stub returns nil on other platforms).
+	sw, err := network.NewL2Switch(cond)
+	if err != nil {
+		slog.Warn("L2 switch unavailable (missing CAP_NET_ADMIN?), falling back to SLIRP", "err", err)
+		sw = nil
+	}
+
+	orch, err := vm.NewOrchestratorWithSwitch(stateDir, sw)
 	if err != nil {
 		return nil, fmt.Errorf("creating orchestrator: %w", err)
 	}
@@ -55,7 +66,8 @@ func NewServer(stateDir string, shutdownFn func()) (*Server, error) {
 
 	return &Server{
 		orch:        orch,
-		conditioner: network.NewConditioner(),
+		conditioner: cond,
+		sw:          sw,
 		snapMgr:     snapMgr,
 		stateDir:    stateDir,
 		shutdownFn:  shutdownFn,

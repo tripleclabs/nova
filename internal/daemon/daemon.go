@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -67,6 +69,11 @@ func (d *Daemon) Run() error {
 
 	pb.RegisterNovaServer(d.grpcServer, srv)
 
+	// Reattach to any VMs that were running before this daemon started.
+	reattachCtx, reattachCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	srv.orch.ReattachRunning(reattachCtx)
+	reattachCancel()
+
 	// Listen on Unix domain socket.
 	lis, err := net.Listen("unix", d.socketPath)
 	if err != nil {
@@ -75,12 +82,16 @@ func (d *Daemon) Run() error {
 	defer os.Remove(d.socketPath)
 
 	// Handle signals.
+	// SIGTERM/SIGINT: destroy all VMs then stop.
+	// SIGUSR1: stop gracefully without destroying VMs (used by "nova daemon reload").
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
 	go func() {
 		sig := <-sigCh
 		slog.Info("received signal, shutting down", "signal", sig)
-		srv.orch.DestroyAll()
+		if sig != syscall.SIGUSR1 {
+			srv.orch.DestroyAll()
+		}
 		d.grpcServer.GracefulStop()
 	}()
 

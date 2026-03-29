@@ -2,6 +2,7 @@ package cloudinit
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -113,6 +114,14 @@ func Generate(cfg GeneratorConfig) ([]byte, error) {
 
 	// Accumulate write_files entries.
 	var writeFiles []any
+
+	// Always write /etc/resolv.conf — cloud-init network-config nameservers
+	// are not reliable across distros (Alpine ignores them entirely).
+	writeFiles = append(writeFiles, map[string]any{
+		"path":    "/etc/resolv.conf",
+		"content": "nameserver 8.8.8.8\nnameserver 8.8.4.4\n",
+	})
+
 	if profile.DoasConf != "" {
 		writeFiles = append(writeFiles, map[string]any{
 			"path":        "/etc/doas.d/nova.conf",
@@ -219,6 +228,20 @@ func GenerateNetworkConfig(cfg GeneratorConfig) []byte {
 				prefixLen = parts[1]
 			}
 		}
+		// Derive gateway as the first host in the subnet (e.g. 10.0.0.1 for 10.0.0.0/24).
+		gateway := ""
+		if cfg.Subnet != "" {
+			if _, ipNet, err := net.ParseCIDR(cfg.Subnet); err == nil {
+				gw := make(net.IP, len(ipNet.IP))
+				copy(gw, ipNet.IP)
+				gw[len(gw)-1]++
+				gateway = gw.String()
+			}
+		}
+		gwLine := ""
+		if gateway != "" {
+			gwLine = fmt.Sprintf("    gateway4: %s\n", gateway)
+		}
 		config := fmt.Sprintf(`version: 2
 ethernets:
   nova0:
@@ -227,7 +250,11 @@ ethernets:
     addresses:
       - %s/%s
     dhcp4: false
-`, strings.ToLower(cfg.MACAddress), cfg.StaticIP, prefixLen)
+%s    nameservers:
+      addresses:
+        - 8.8.8.8
+        - 8.8.4.4
+`, strings.ToLower(cfg.MACAddress), cfg.StaticIP, prefixLen, gwLine)
 		return []byte(config)
 	}
 
@@ -241,6 +268,10 @@ ethernets:
       macaddress: "%s"
     dhcp4: true
     dhcp-identifier: mac
+    nameservers:
+      addresses:
+        - 8.8.8.8
+        - 8.8.4.4
 `, strings.ToLower(cfg.MACAddress))
 	return []byte(config)
 }

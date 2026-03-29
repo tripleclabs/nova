@@ -4,6 +4,7 @@ package hypervisor
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime"
 )
 
@@ -35,10 +36,11 @@ type VMConfig struct {
 // NetworkConfig describes the VM's network setup.
 type NetworkConfig struct {
 	PortForwards []PortForward
-	MACAddress   string // Deterministic MAC for IP discovery (e.g., "52:54:00:00:00:02").
-	StaticIP     string // Static IP to assign in guest for multi-node (e.g., "10.0.0.2").
-	Subnet       string // CIDR for the multi-node LAN (e.g., "10.0.0.0/24").
-	MultiNode    bool   // When true, use multi-node networking (mcast on Linux, shared NAT on macOS).
+	MACAddress   string   // Deterministic MAC for IP discovery (e.g., "52:54:00:00:00:02").
+	StaticIP     string   // Static IP to assign in guest for multi-node (e.g., "10.0.0.2").
+	Subnet       string   // CIDR for the multi-node LAN (e.g., "10.0.0.0/24").
+	MultiNode    bool     // When true, use multi-node networking (mcast on Linux, shared NAT on macOS).
+	SwitchFile   *os.File // QEMU-side socketpair fd; nil means use legacy SLIRP/mcast.
 }
 
 // PortForward maps a host port to a guest port.
@@ -72,6 +74,17 @@ type Hypervisor interface {
 
 	// GuestIP returns the IP address of the guest, if known.
 	GuestIP() (string, error)
+}
+
+// NewAttached reconnects to an already-running VM via its QMP socket.
+// Only supported on Linux (QEMU). Returns an error on unsupported platforms.
+func NewAttached(ctx context.Context, cfg VMConfig) (Hypervisor, error) {
+	switch runtime.GOOS {
+	case "linux":
+		return attachQEMUEngine(ctx, cfg)
+	default:
+		return nil, fmt.Errorf("daemon reattach not supported on %s", runtime.GOOS)
+	}
 }
 
 // New returns a Hypervisor implementation appropriate for the current platform.

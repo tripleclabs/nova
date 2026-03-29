@@ -12,7 +12,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -22,10 +25,10 @@ type qemuEngine struct {
 	state   State
 	cfg     VMConfig
 	cmd     *exec.Cmd
-	qmpSock string     // path to QMP Unix socket
-	qmp     *qmpClient // QMP connection for VM control
-	tmpDir  string     // temp dir owning qmpSock; cleaned up on stop
-	waitCh  chan error  // receives process exit error from background watcher
+	proc    *os.Process // set for reattached VMs (not started by this process)
+	qmpSock string      // path to QMP Unix socket
+	qmp     *qmpClient  // QMP connection for VM control
+	waitCh  chan error   // receives process exit error from background watcher
 }
 
 func newQEMUEngine() (Hypervisor, error) {
@@ -46,22 +49,18 @@ func (e *qemuEngine) Start(ctx context.Context, cfg VMConfig) error {
 		return err
 	}
 
-	tmpDir, err := os.MkdirTemp("", "nova-qemu-*")
-	if err != nil {
-		e.state = StateError
-		return fmt.Errorf("creating temp dir: %w", err)
-	}
-	e.tmpDir = tmpDir
-	e.qmpSock = filepath.Join(tmpDir, "qmp.sock")
+	e.qmpSock = filepath.Join(cfg.MachineDir, "qmp.sock")
 
 	args := e.buildArgs()
 	slog.Debug("starting QEMU", "binary", binary, "args", args)
 
-	e.cmd = exec.CommandContext(ctx, binary, args...)
+	e.cmd = exec.CommandContext(context.Background(), binary, args...)
+	if cfg.Network.SwitchFile != nil {
+		// Pass the QEMU-side socketpair fd as fd=3 in the child process.
+		e.cmd.ExtraFiles = []*os.File{cfg.Network.SwitchFile}
+	}
 	if err := e.cmd.Start(); err != nil {
 		e.state = StateError
-		os.RemoveAll(tmpDir)
-		e.tmpDir = ""
 		return fmt.Errorf("starting QEMU process: %w", err)
 	}
 	pid := e.cmd.Process.Pid
@@ -87,8 +86,7 @@ func (e *qemuEngine) Start(ctx context.Context, cfg VMConfig) error {
 				slog.Info("QEMU process exited", "name", cfg.Name)
 			}
 		}
-		os.RemoveAll(e.tmpDir)
-		e.tmpDir = ""
+		os.Remove(e.qmpSock)
 	}()
 
 	qmp, err := connectQMP(ctx, e.qmpSock)
@@ -115,7 +113,7 @@ func (e *qemuEngine) Stop(ctx context.Context) error {
 		e.mu.Unlock()
 		return nil
 	}
-	if e.cmd == nil || e.qmp == nil {
+	if e.qmp == nil {
 		e.mu.Unlock()
 		return fmt.Errorf("VM not started")
 	}
@@ -156,7 +154,11 @@ func (e *qemuEngine) ForceKill() error {
 
 // forceKillLocked must be called with e.mu held.
 func (e *qemuEngine) forceKillLocked() error {
-	if e.cmd == nil || e.cmd.Process == nil {
+	proc := e.proc
+	if e.cmd != nil && e.cmd.Process != nil {
+		proc = e.cmd.Process
+	}
+	if proc == nil {
 		return fmt.Errorf("VM not started")
 	}
 
@@ -169,7 +171,7 @@ func (e *qemuEngine) forceKillLocked() error {
 		}
 	}
 
-	if err := e.cmd.Process.Kill(); err != nil {
+	if err := proc.Kill(); err != nil {
 		e.state = StateError
 		return fmt.Errorf("killing QEMU process: %w", err)
 	}
@@ -302,8 +304,14 @@ func (e *qemuEngine) buildArgs() []string {
 			fmt.Sprintf("file=%s,format=raw,if=virtio,media=cdrom", cfg.CIDATAPath))
 	}
 
-	if cfg.Network.MultiNode {
-		// Multi-node: two NICs.
+	if cfg.Network.SwitchFile != nil {
+		// Switch-based networking: single NIC connected to the daemon's L2 switch via fd=3.
+		args = append(args,
+			"-netdev", "socket,id=net0,fd=3",
+			"-device", fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s", cfg.Network.MACAddress),
+		)
+	} else if cfg.Network.MultiNode {
+		// Legacy multi-node: two NICs.
 		// NIC 1: socket multicast — virtual hub connecting all VMs (rootless).
 		mcastAddr := "230.0.0.1:1234"
 		mcastDev := fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s", cfg.Network.MACAddress)
@@ -321,7 +329,7 @@ func (e *qemuEngine) buildArgs() []string {
 			"-device", "virtio-net-pci,netdev=net1",
 		)
 	} else {
-		// Single-VM: SLIRP user-mode networking with port forwards.
+		// Legacy single-VM: SLIRP user-mode networking with port forwards.
 		netdev := "user,id=net0"
 		for _, pf := range cfg.Network.PortForwards {
 			netdev += fmt.Sprintf(",hostfwd=%s::%d-:%d", pf.Protocol, pf.HostPort, pf.GuestPort)
@@ -360,6 +368,82 @@ func (e *qemuEngine) buildArgs() []string {
 
 	args = append(args, "-nographic")
 	return args
+}
+
+// attachQEMUEngine reconnects to an already-running QEMU VM via its QMP socket.
+// Used by the daemon to reattach after a reload.
+func attachQEMUEngine(ctx context.Context, cfg VMConfig) (Hypervisor, error) {
+	qmpSock := filepath.Join(cfg.MachineDir, "qmp.sock")
+	if _, err := os.Stat(qmpSock); err != nil {
+		return nil, fmt.Errorf("QMP socket not found at %s", qmpSock)
+	}
+
+	qmp, err := connectQMP(ctx, qmpSock)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to QMP: %w", err)
+	}
+
+	raw, err := qmp.execute("query-status", nil)
+	if err != nil {
+		qmp.close()
+		return nil, fmt.Errorf("querying VM status: %w", err)
+	}
+	var st struct {
+		Status string `json:"status"`
+	}
+	json.Unmarshal(raw, &st)
+	vmState := mapQMPStatus(st.Status)
+	if vmState == StateStopped || vmState == StateError {
+		qmp.close()
+		return nil, fmt.Errorf("VM is in state %s", vmState)
+	}
+
+	e := &qemuEngine{
+		cfg:     cfg,
+		state:   vmState,
+		qmpSock: qmpSock,
+		qmp:     qmp,
+		waitCh:  make(chan error, 1),
+	}
+
+	// Locate the process for monitoring and force-kill.
+	if cfg.PIDPath != "" {
+		if data, err := os.ReadFile(cfg.PIDPath); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid > 0 {
+				if proc, err := os.FindProcess(pid); err == nil {
+					e.proc = proc
+					go e.watchAttachedProcess()
+				}
+			}
+		}
+	}
+
+	slog.Info("reattached to running VM", "name", cfg.Name, "qmp", qmpSock)
+	return e, nil
+}
+
+// watchAttachedProcess polls the PID of a reattached VM and signals waitCh when it exits.
+func (e *qemuEngine) watchAttachedProcess() {
+	for {
+		time.Sleep(500 * time.Millisecond)
+		e.mu.Lock()
+		proc := e.proc
+		e.mu.Unlock()
+		if proc == nil {
+			return
+		}
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			e.waitCh <- err
+			e.mu.Lock()
+			if e.state == StateRunning || e.state == StateStarting {
+				e.state = StateStopped
+				slog.Info("attached VM process exited", "name", e.cfg.Name)
+			}
+			os.Remove(e.qmpSock)
+			e.mu.Unlock()
+			return
+		}
+	}
 }
 
 // qemuBinary resolves the qemu-system binary for the current architecture.

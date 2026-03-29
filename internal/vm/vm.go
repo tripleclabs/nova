@@ -45,6 +45,7 @@ type Orchestrator struct {
 	images      *image.Manager
 	stateDir    string
 	hypervisors map[string]hypervisor.Hypervisor // machineID → live handle
+	sw          *network.L2Switch                // nil on non-Linux or when unavailable
 }
 
 // NewOrchestratorWithDir creates an Orchestrator with a custom state directory (for testing).
@@ -58,6 +59,17 @@ func NewOrchestratorWithDir(novaDir string) (*Orchestrator, error) {
 		return nil, err
 	}
 	return &Orchestrator{store: store, images: imgMgr, stateDir: novaDir, hypervisors: make(map[string]hypervisor.Hypervisor)}, nil
+}
+
+// NewOrchestratorWithSwitch creates an Orchestrator with a custom state directory
+// and an optional L2Switch.  Pass nil for sw to use legacy SLIRP networking.
+func NewOrchestratorWithSwitch(novaDir string, sw *network.L2Switch) (*Orchestrator, error) {
+	o, err := NewOrchestratorWithDir(novaDir)
+	if err != nil {
+		return nil, err
+	}
+	o.sw = sw
+	return o, nil
 }
 
 // NewOrchestrator creates a new Orchestrator using the default Nova state directory.
@@ -223,6 +235,10 @@ func (o *Orchestrator) upNode(
 	if isMultiNode {
 		ciCfg.StaticIP = node.IP
 		ciCfg.Subnet = subnet
+	} else if o.sw != nil {
+		// Single-VM with L2 switch: assign static IP via cloud-init.
+		ciCfg.StaticIP = "10.0.0.2"
+		ciCfg.Subnet = "10.0.0.0/24"
 	}
 	// Inject extra user if configured.
 	if node.User != nil {
@@ -290,14 +306,29 @@ func (o *Orchestrator) upNode(
 		})
 	}
 
+	// L2 switch networking (Linux only; o.sw is nil on other platforms).
+	if o.sw != nil {
+		qemuFile, err := o.sw.NewPort(node.Name)
+		if err != nil {
+			o.store.Delete(machineID)
+			return fmt.Errorf("allocating switch port: %w", err)
+		}
+		vmCfg.Network.SwitchFile = qemuFile
+		// Single-VM gets a fixed IP; multi-node nodes already have node.IP set.
+		if !isMultiNode {
+			node.IP = "10.0.0.2"
+			vmCfg.Network.StaticIP = node.IP
+		}
+	}
+
 	// Multi-node networking: deterministic MAC, static IP, and auto SSH port forward.
 	vmCfg.Network.MACAddress = mac
 	if isMultiNode {
 		vmCfg.Network.MultiNode = true
 		vmCfg.Network.StaticIP = node.IP
 		vmCfg.Network.Subnet = subnet
-		// On Linux, SSH goes through SLIRP port forward (host can't reach mcast NIC).
-		if runtime.GOOS == "linux" {
+		// On Linux with legacy SLIRP (no switch), SSH goes through a port forward.
+		if runtime.GOOS == "linux" && o.sw == nil {
 			sshHostPort := 2200 + nodeIndex
 			vmCfg.Network.PortForwards = append(vmCfg.Network.PortForwards, hypervisor.PortForward{
 				HostPort:  sshHostPort,
@@ -337,6 +368,10 @@ func (o *Orchestrator) upNode(
 		o.store.Delete(machineID)
 		return fmt.Errorf("starting VM: %w", err)
 	}
+	// Close the QEMU-side fd in the parent after QEMU has inherited it.
+	if vmCfg.Network.SwitchFile != nil {
+		vmCfg.Network.SwitchFile.Close()
+	}
 
 	// Retain the hypervisor handle for later stop/kill/exec operations.
 	o.mu.Lock()
@@ -359,12 +394,16 @@ func (o *Orchestrator) upNode(
 
 	// Write SSH endpoint metadata for ExecSSH, provisioners, and nova shell.
 	sshEP := SSHEndpoint{Port: 22}
-	if isMultiNode && runtime.GOOS == "linux" {
-		// Linux multi-node: SSH through SLIRP port forward.
+	if o.sw != nil {
+		// L2 switch: VM is directly reachable via nova0 TAP using its static IP.
+		sshEP.Host = node.IP
+		sshEP.Port = 22
+	} else if isMultiNode && runtime.GOOS == "linux" {
+		// Linux multi-node legacy: SSH through SLIRP port forward.
 		sshEP.Host = "127.0.0.1"
 		sshEP.Port = 2200 + nodeIndex
 	} else if runtime.GOOS == "linux" {
-		// Linux single-VM: SLIRP address.
+		// Linux single-VM legacy: SLIRP address.
 		sshEP.Host = "10.0.2.15"
 	} else {
 		// macOS: discover the guest IP from DHCP leases now that the VM has booted.
@@ -494,6 +533,10 @@ func (o *Orchestrator) Destroy(name string) error {
 
 	if hv != nil {
 		hv.ForceKill()
+	}
+
+	if o.sw != nil {
+		o.sw.RemovePort(name)
 	}
 
 	if err := o.store.Delete(name); err != nil {
@@ -651,7 +694,49 @@ func (o *Orchestrator) WaitReady(ctx context.Context, name string) error {
 
 // Status returns all known machines.
 func (o *Orchestrator) Status() ([]*state.Machine, error) {
-	return o.store.List()
+	machines, err := o.store.List()
+	if err != nil {
+		return nil, err
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	for _, m := range machines {
+		if hv, ok := o.hypervisors[m.ID]; ok {
+			m.State = state.MachineState(hv.GetState())
+		}
+	}
+	return machines, nil
+}
+
+// ReattachRunning reconnects the orchestrator to any VMs that were already running
+// (e.g. after a daemon reload). VMs that can't be reattached are marked as error.
+func (o *Orchestrator) ReattachRunning(ctx context.Context) {
+	machines, err := o.store.List()
+	if err != nil {
+		slog.Warn("reattach: listing machines failed", "err", err)
+		return
+	}
+	for _, m := range machines {
+		if m.State != state.StateRunning {
+			continue
+		}
+		machineDir := o.store.MachineDir(m.ID)
+		cfg := hypervisor.VMConfig{
+			Name:       m.Name,
+			MachineDir: machineDir,
+			PIDPath:    filepath.Join(machineDir, "hypervisor.pid"),
+		}
+		hv, err := hypervisor.NewAttached(ctx, cfg)
+		if err != nil {
+			slog.Warn("reattach: could not reconnect to VM", "id", m.ID, "name", m.Name, "err", err)
+			m.State = state.StateError
+			o.store.Update(m)
+			continue
+		}
+		o.mu.Lock()
+		o.hypervisors[m.ID] = hv
+		o.mu.Unlock()
+	}
 }
 
 // DestroyAll force-kills all VMs and cleans up all state. Used for test teardown.
