@@ -125,6 +125,16 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 	isMultiNode := len(nodes) > 1
 	subnet := cfg.Subnet()
 
+	// On macOS multi-node, create an in-process L2 switch for inter-VM networking.
+	// On Linux this is created eagerly by the daemon server (with TAP + NAT).
+	if isMultiNode && runtime.GOOS == "darwin" && o.sw == nil {
+		sw, err := network.NewL2SwitchForCluster(nil)
+		if err != nil {
+			return fmt.Errorf("creating L2 switch: %w", err)
+		}
+		o.sw = sw
+	}
+
 	for i, node := range nodes {
 		if err := o.upNode(ctx, cfgPath, node, hostsEntries, userDataPath, i, isMultiNode, subnet); err != nil {
 			return fmt.Errorf("node %q: %w", node.Name, err)
@@ -232,13 +242,21 @@ func (o *Orchestrator) upNode(
 		OS:            imageOS,
 		MACAddress:    mac,
 	}
-	// On Linux multi-node, assign static IPs (mcast NIC is isolated).
-	// On macOS, all VMs share the VZ NAT bridge — use DHCP and discover IPs.
-	if isMultiNode && runtime.GOOS == "linux" {
+	// Pre-generate switch MAC if we'll be using the L2 switch.
+	// Needed before cloud-init generation so network-config can reference both NICs.
+	var switchMAC string
+	if o.sw != nil {
+		switchMAC = generateMAC()
+	}
+
+	// Assign static IPs for multi-node, or fixed IP for single-VM with switch.
+	if isMultiNode {
 		ciCfg.StaticIP = node.IP
 		ciCfg.Subnet = subnet
+		if switchMAC != "" {
+			ciCfg.SwitchMAC = switchMAC // dual-NIC: NAT + switched
+		}
 	} else if o.sw != nil {
-		// Single-VM with L2 switch: assign static IP via cloud-init.
 		ciCfg.StaticIP = "10.0.0.2"
 		ciCfg.Subnet = "10.0.0.0/24"
 	}
@@ -308,14 +326,16 @@ func (o *Orchestrator) upNode(
 		})
 	}
 
-	// L2 switch networking (Linux only; o.sw is nil on other platforms).
+	// L2 switch networking: allocate a port on the virtual switch.
+	// Linux: TAP-backed switch with NAT. macOS: DGRAM socketpair-backed switch.
 	if o.sw != nil {
-		qemuFile, err := o.sw.NewPort(node.Name)
+		switchFile, err := o.sw.NewPort(node.Name)
 		if err != nil {
 			o.store.Delete(machineID)
 			return fmt.Errorf("allocating switch port: %w", err)
 		}
-		vmCfg.Network.SwitchFile = qemuFile
+		vmCfg.Network.SwitchFile = switchFile
+		vmCfg.Network.SwitchMAC = switchMAC
 		// Single-VM gets a fixed IP; multi-node nodes already have node.IP set.
 		if !isMultiNode {
 			node.IP = "10.0.0.2"
@@ -396,8 +416,8 @@ func (o *Orchestrator) upNode(
 
 	// Write SSH endpoint metadata for ExecSSH, provisioners, and nova shell.
 	sshEP := SSHEndpoint{Port: 22}
-	if o.sw != nil {
-		// L2 switch: VM is directly reachable via nova0 TAP using its static IP.
+	if o.sw != nil && runtime.GOOS == "linux" {
+		// Linux L2 switch: VM is directly reachable via nova0 TAP using its static IP.
 		sshEP.Host = node.IP
 		sshEP.Port = 22
 	} else if isMultiNode && runtime.GOOS == "linux" {

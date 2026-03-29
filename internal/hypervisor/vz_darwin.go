@@ -149,7 +149,7 @@ func (e *vzEngine) GuestIP() (string, error) {
 		}
 		time.Sleep(time.Second)
 	}
-	return "", fmt.Errorf("guest IP not found for MAC %s after 30s (checked DHCP leases and ARP)", mac)
+	return "", fmt.Errorf("guest IP not found for MAC %s after 15s (checked DHCP leases and ARP)", mac)
 }
 
 // LookupARPByMAC scans the host ARP table for a given MAC address.
@@ -356,7 +356,34 @@ func (e *vzEngine) buildVZConfig(cfg VMConfig) (*vz.VirtualMachineConfiguration,
 		e.macAddr = cfg.Network.MACAddress
 	}
 
-	vzCfg.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{netDev})
+	netDevs := []*vz.VirtioNetworkDeviceConfiguration{netDev}
+
+	// NIC 2: Switched network for inter-VM communication (multi-node only).
+	if cfg.Network.SwitchFile != nil {
+		switchAttachment, err := vz.NewFileHandleNetworkDeviceAttachment(cfg.Network.SwitchFile)
+		if err != nil {
+			return nil, fmt.Errorf("creating switch network attachment: %w", err)
+		}
+		switchDev, err := vz.NewVirtioNetworkDeviceConfiguration(switchAttachment)
+		if err != nil {
+			return nil, fmt.Errorf("creating switch network device: %w", err)
+		}
+		// Set a second MAC for the switched NIC so cloud-init can match it.
+		if cfg.Network.SwitchMAC != "" {
+			hwAddr, err := net.ParseMAC(cfg.Network.SwitchMAC)
+			if err != nil {
+				return nil, fmt.Errorf("parsing switch MAC %q: %w", cfg.Network.SwitchMAC, err)
+			}
+			macAddr, err := vz.NewMACAddress(hwAddr)
+			if err != nil {
+				return nil, fmt.Errorf("creating switch VZ MAC: %w", err)
+			}
+			switchDev.SetMACAddress(macAddr)
+		}
+		netDevs = append(netDevs, switchDev)
+	}
+
+	vzCfg.SetNetworkDevicesVirtualMachineConfiguration(netDevs)
 
 	// Entropy — for /dev/random in guest.
 	entropy, err := vz.NewVirtioEntropyDeviceConfiguration()

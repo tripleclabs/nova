@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package network
 
@@ -22,3 +22,6 @@ func (sw *L2Switch) RemovePort(nodeName string) {}
 
 // Close is a no-op stub.
 func (sw *L2Switch) Close() error { return nil }
+
+// NewL2SwitchForCluster is a no-op stub on unsupported platforms.
+func NewL2SwitchForCluster(cond *Conditioner) (*L2Switch, error) { return nil, nil }

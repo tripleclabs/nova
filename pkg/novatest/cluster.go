@@ -180,10 +180,10 @@ func (c *Cluster) WaitReady() {
 	c.t.Helper()
 	for _, n := range c.nodes {
 		c.t.Logf("novatest: waiting for %s...", n.Name)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		_, err := c.client.WaitReady(ctx, &pb.WaitReadyRequest{
 			Node:    n.Name,
-			Timeout: durationpb.New(2 * time.Minute),
+			Timeout: durationpb.New(45 * time.Second),
 		})
 		cancel()
 		if err != nil {

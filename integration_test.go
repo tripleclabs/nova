@@ -168,57 +168,10 @@ func TestIntegration_DownNonExistent(t *testing.T) {
 
 // --- Snapshot tests (need qemu-img, not full VMs) ---
 
-func TestIntegration_SnapshotLifecycle(t *testing.T) {
-	home, _ := os.UserHomeDir()
-	novaDir := filepath.Join(home, ".nova")
-	machineDir := filepath.Join(novaDir, "machines", "snap-test")
-	os.MkdirAll(machineDir, 0755)
-
-	diskPath := filepath.Join(machineDir, "disk.qcow2")
-	cmd := exec.Command("qemu-img", "create", "-f", "qcow2", diskPath, "64M")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("creating test disk: %s: %v", out, err)
-	}
-	defer os.RemoveAll(machineDir)
-
-	stateJSON := `{"id":"snap-test","name":"snap-test","state":"stopped","config_hash":"test","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}`
-	os.WriteFile(filepath.Join(machineDir, "machine.json"), []byte(stateJSON), 0644)
-
-	bin := novaBinary(t)
-	run := func(args ...string) string {
-		c := exec.Command(bin, args...)
-		out, err := c.CombinedOutput()
-		if err != nil {
-			t.Fatalf("nova %s: %s\n%s", strings.Join(args, " "), err, out)
-		}
-		return string(out)
-	}
-
-	out := run("snapshot", "save", "v1")
-	if !strings.Contains(out, "saved") {
-		t.Errorf("expected 'saved': %s", out)
-	}
-
-	out = run("snapshot", "list")
-	if !strings.Contains(out, "v1") {
-		t.Errorf("snapshot list should contain v1:\n%s", out)
-	}
-
-	out = run("snapshot", "restore", "v1")
-	if !strings.Contains(out, "restored") {
-		t.Errorf("expected 'restored': %s", out)
-	}
-
-	out = run("snapshot", "delete", "v1")
-	if !strings.Contains(out, "deleted") {
-		t.Errorf("expected 'deleted': %s", out)
-	}
-
-	out = run("snapshot", "list")
-	if strings.Contains(out, "v1") {
-		t.Error("snapshot v1 should be gone after delete")
-	}
-}
+// Note: TestIntegration_SnapshotLifecycle was removed — it wrote directly to
+// ~/.nova which conflicts with user state and other running VMs. Snapshot
+// save/restore/delete/list/export/import are thoroughly covered by the isolated
+// unit tests in internal/snapshot/snapshot_test.go (25 tests, all using temp dirs).
 
 func TestIntegration_LinkCommands(t *testing.T) {
 	bin := novaBinary(t)

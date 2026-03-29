@@ -66,6 +66,12 @@ func NewL2Switch(cond *Conditioner) (*L2Switch, error) {
 	return sw, nil
 }
 
+// NewL2SwitchForCluster creates an L2Switch for multi-node clusters.
+// On Linux this is identical to NewL2Switch (TAP-backed).
+func NewL2SwitchForCluster(cond *Conditioner) (*L2Switch, error) {
+	return NewL2Switch(cond)
+}
+
 // NewPort allocates a socketpair for a new VM.  The QEMU-side *os.File is
 // returned; the caller must add it to cmd.ExtraFiles and then close it in the
 // parent after cmd.Start().

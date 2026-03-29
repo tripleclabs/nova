@@ -5,6 +5,7 @@ package nova_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tripleclabs/nova/pkg/novatest"
 )
@@ -92,6 +93,19 @@ func TestIntegration_MultiNode_SSH(t *testing.T) {
 	// Verify both have sudo.
 	cluster.Node("node1").Exec("sudo id")
 	cluster.Node("node2").Exec("sudo id")
+
+	// Verify inter-VM connectivity via the switched NIC (static IPs).
+	// node1=10.0.0.2, node2=10.0.0.3 on the L2 switch.
+	novatest.Eventually(t, 30*time.Second, func() bool {
+		// Use bash /dev/tcp since Ubuntu minimal doesn't have ping.
+		result := cluster.Node("node1").ExecResult("echo >/dev/tcp/10.0.0.3/22 2>/dev/null && echo reachable || echo unreachable")
+		return strings.Contains(result.Stdout, "reachable")
+	})
+
+	novatest.Eventually(t, 30*time.Second, func() bool {
+		result := cluster.Node("node2").ExecResult("echo >/dev/tcp/10.0.0.2/22 2>/dev/null && echo reachable || echo unreachable")
+		return strings.Contains(result.Stdout, "reachable")
+	})
 }
 
 // TestIntegration_Provisioner_Runs verifies that shell provisioners execute

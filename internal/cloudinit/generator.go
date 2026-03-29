@@ -48,7 +48,8 @@ type GeneratorConfig struct {
 	ExtraUser     *UserConfig   // Optional non-Nova user to create alongside the internal nova user.
 	StaticIP      string        // Static IP for multi-node guest NIC (e.g., "10.0.0.2").
 	Subnet        string        // CIDR subnet for multi-node (e.g., "10.0.0.0/24").
-	MACAddress    string        // MAC address of the multi-node NIC (for network-config matching).
+	MACAddress    string        // MAC address of the primary NIC (NAT/DHCP).
+	SwitchMAC     string        // MAC address of the switched NIC (static IP, inter-VM).
 }
 
 // Generate merges Nova's required defaults with a user-provided cloud-config.
@@ -220,8 +221,39 @@ func GenerateNetworkConfig(cfg GeneratorConfig) []byte {
 		return nil
 	}
 
+	// Dual-NIC: NAT NIC (DHCP) + switched NIC (static IP).
+	// Used on macOS multi-node where VMs have two NICs — one for host/internet,
+	// one for inter-VM communication via the L2 switch.
+	if cfg.SwitchMAC != "" && cfg.StaticIP != "" {
+		prefixLen := "24"
+		if cfg.Subnet != "" {
+			if parts := strings.SplitN(cfg.Subnet, "/", 2); len(parts) == 2 {
+				prefixLen = parts[1]
+			}
+		}
+		config := fmt.Sprintf(`version: 2
+ethernets:
+  nova-nat:
+    match:
+      macaddress: "%s"
+    dhcp4: true
+    dhcp-identifier: mac
+  nova-switch:
+    match:
+      macaddress: "%s"
+    addresses:
+      - %s/%s
+    dhcp4: false
+    nameservers:
+      addresses:
+        - 8.8.8.8
+        - 8.8.4.4
+`, strings.ToLower(cfg.MACAddress), strings.ToLower(cfg.SwitchMAC), cfg.StaticIP, prefixLen)
+		return []byte(config)
+	}
+
 	if cfg.StaticIP != "" {
-		// Multi-node: static IP on the cluster NIC.
+		// Single-NIC static IP (Linux with L2 switch or mcast).
 		prefixLen := "24"
 		if cfg.Subnet != "" {
 			if parts := strings.SplitN(cfg.Subnet, "/", 2); len(parts) == 2 {

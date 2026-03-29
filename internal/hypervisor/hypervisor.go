@@ -40,7 +40,8 @@ type NetworkConfig struct {
 	StaticIP     string   // Static IP to assign in guest for multi-node (e.g., "10.0.0.2").
 	Subnet       string   // CIDR for the multi-node LAN (e.g., "10.0.0.0/24").
 	MultiNode    bool     // When true, use multi-node networking (mcast on Linux, shared NAT on macOS).
-	SwitchFile   *os.File // QEMU-side socketpair fd; nil means use legacy SLIRP/mcast.
+	SwitchFile   *os.File // Socketpair fd for the L2 switch; nil means use legacy SLIRP/mcast.
+	SwitchMAC    string   // MAC for the switched NIC (macOS multi-node).
 }
 
 // PortForward maps a host port to a guest port.

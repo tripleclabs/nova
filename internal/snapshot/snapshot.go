@@ -49,9 +49,9 @@ func NewManager(store *state.Store, novaDir string) (*Manager, error) {
 	return &Manager{store: store, snapDir: snapDir}, nil
 }
 
-// Save creates a named snapshot of all machines in the cluster.
-// Uses qemu-img snapshot for qcow2 internal snapshots (instant, CoW).
-func (m *Manager) Save(name string) error {
+// Save creates a named snapshot. If machineNames is empty, all machines are
+// included. Otherwise only the named machines are snapshotted.
+func (m *Manager) Save(name string, machineNames ...string) error {
 	if err := validateName(name); err != nil {
 		return err
 	}
@@ -61,10 +61,30 @@ func (m *Manager) Save(name string) error {
 		return fmt.Errorf("snapshot %q already exists (delete it first)", name)
 	}
 
-	machines, err := m.store.List()
+	allMachines, err := m.store.List()
 	if err != nil {
 		return fmt.Errorf("listing machines: %w", err)
 	}
+
+	// Filter to requested machines if specified.
+	var machines []*state.Machine
+	if len(machineNames) > 0 {
+		wanted := make(map[string]bool)
+		for _, n := range machineNames {
+			wanted[n] = true
+		}
+		for _, machine := range allMachines {
+			if wanted[machine.ID] || wanted[machine.Name] {
+				machines = append(machines, machine)
+			}
+		}
+		if len(machines) == 0 {
+			return fmt.Errorf("no matching machines found")
+		}
+	} else {
+		machines = allMachines
+	}
+
 	if len(machines) == 0 {
 		return fmt.Errorf("no machines to snapshot")
 	}
