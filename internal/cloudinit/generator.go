@@ -123,12 +123,44 @@ func Generate(cfg GeneratorConfig) ([]byte, error) {
 		"content": "nameserver 8.8.8.8\nnameserver 8.8.4.4\n",
 	})
 
+	// Write an sshd drop-in that enables agent forwarding and cleans up stale
+	// agent sockets on reconnect. Placed in sshd_config.d/ for distros that
+	// support Include (Ubuntu 20.04+, Debian 10+, Alpine 3.15+); the runcmd
+	// below also injects the setting directly into sshd_config for older images.
+	writeFiles = append(writeFiles, map[string]any{
+		"path":        "/etc/ssh/sshd_config.d/50-nova.conf",
+		"permissions": "0600",
+		"content":     "AllowAgentForwarding yes\nStreamLocalBindUnlink yes\n",
+	})
+
+	// Write a global SSH client config so outbound SSH connections (e.g. git clone)
+	// accept new host keys on first use without prompting. StrictHostKeyChecking
+	// accept-new still rejects changed keys, so MITM protection is preserved.
+	writeFiles = append(writeFiles, map[string]any{
+		"path":    "/etc/ssh/ssh_config.d/50-nova.conf",
+		"content": "Host *\n    StrictHostKeyChecking accept-new\n    ForwardAgent yes\n",
+	})
+
 	if profile.DoasConf != "" {
 		writeFiles = append(writeFiles, map[string]any{
 			"path":        "/etc/doas.d/nova.conf",
 			"content":     profile.DoasConf,
 			"permissions": "0400",
 		})
+	}
+
+	// Ensure AllowAgentForwarding is active even on distros without sshd_config.d Include.
+	// Creates the drop-in directory, patches sshd_config directly as a fallback,
+	// and reloads sshd so the setting takes effect on first boot.
+	sshdCmds := []any{
+		"mkdir -p /etc/ssh/sshd_config.d",
+		"grep -qxF 'Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config || echo 'Include /etc/ssh/sshd_config.d/*.conf' >> /etc/ssh/sshd_config",
+		"systemctl reload sshd 2>/dev/null || rc-service sshd reload 2>/dev/null || true",
+	}
+	if existing, ok := defaults["runcmd"].([]any); ok {
+		defaults["runcmd"] = append(existing, sshdCmds...)
+	} else {
+		defaults["runcmd"] = sshdCmds
 	}
 
 	// Inject VirtioFS/9p mount commands.

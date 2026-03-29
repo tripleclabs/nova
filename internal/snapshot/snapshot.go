@@ -95,16 +95,19 @@ func (m *Manager) Save(name string, machineNames ...string) error {
 	}
 
 	for _, machine := range machines {
-		diskPath := filepath.Join(m.store.MachineDir(machine.ID), "disk.qcow2")
-		if _, err := os.Stat(diskPath); err != nil {
-			return fmt.Errorf("disk not found for machine %q: %w", machine.ID, err)
-		}
+		machineDir := m.store.MachineDir(machine.ID)
 
-		// Create internal qcow2 snapshot.
-		if err := qemuImgSnapshot(diskPath, name); err != nil {
-			// Roll back any snapshots already created.
-			m.rollbackSnapshot(snap.Machines, name)
-			return fmt.Errorf("snapshotting %q: %w", machine.ID, err)
+		// For running VMs, use QMP savevm (no write-lock needed).
+		// For stopped VMs, fall back to qemu-img snapshot.
+		if err := tryQMPHMPCommand(machineDir, "savevm "+name); err != nil {
+			diskPath := filepath.Join(machineDir, "disk.qcow2")
+			if _, statErr := os.Stat(diskPath); statErr != nil {
+				return fmt.Errorf("disk not found for machine %q: %w", machine.ID, statErr)
+			}
+			if err := qemuImgSnapshot(diskPath, name); err != nil {
+				m.rollbackSnapshot(snap.Machines, name)
+				return fmt.Errorf("snapshotting %q: %w", machine.ID, err)
+			}
 		}
 
 		snap.Machines = append(snap.Machines, MachineMeta{
@@ -127,9 +130,14 @@ func (m *Manager) Restore(name string) error {
 	}
 
 	for _, mm := range snap.Machines {
-		diskPath := filepath.Join(m.store.MachineDir(mm.ID), mm.DiskPath)
-		if err := qemuImgApplySnapshot(diskPath, name); err != nil {
-			return fmt.Errorf("restoring %q: %w", mm.ID, err)
+		machineDir := m.store.MachineDir(mm.ID)
+		// For running VMs, use QMP loadvm (restores disk+RAM state in-place).
+		// For stopped VMs, fall back to qemu-img snapshot -a.
+		if err := tryQMPHMPCommand(machineDir, "loadvm "+name); err != nil {
+			diskPath := filepath.Join(machineDir, mm.DiskPath)
+			if err := qemuImgApplySnapshot(diskPath, name); err != nil {
+				return fmt.Errorf("restoring %q: %w", mm.ID, err)
+			}
 		}
 	}
 
@@ -167,9 +175,12 @@ func (m *Manager) Delete(name string) error {
 	}
 
 	for _, mm := range snap.Machines {
-		diskPath := filepath.Join(m.store.MachineDir(mm.ID), mm.DiskPath)
-		// Best-effort: disk may have been nuked.
-		qemuImgDeleteSnapshot(diskPath, name)
+		machineDir := m.store.MachineDir(mm.ID)
+		// Best-effort: try QMP delvm for running VMs, fall back to qemu-img.
+		if err := tryQMPHMPCommand(machineDir, "delvm "+name); err != nil {
+			diskPath := filepath.Join(machineDir, mm.DiskPath)
+			qemuImgDeleteSnapshot(diskPath, name) // best-effort; disk may be gone
+		}
 	}
 
 	return os.Remove(m.metaPath(name))

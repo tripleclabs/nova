@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -37,6 +38,48 @@ type Server struct {
 	snapMgr     *snapshot.Manager
 	stateDir    string
 	shutdownFn  func() // called by the Shutdown RPC
+	events      *eventBroadcaster
+}
+
+// eventBroadcaster fans out ClusterEvents to all active StreamEvents subscribers.
+type eventBroadcaster struct {
+	mu   sync.Mutex
+	subs map[uint64]chan *pb.ClusterEvent
+	next uint64
+}
+
+func newEventBroadcaster() *eventBroadcaster {
+	return &eventBroadcaster{subs: make(map[uint64]chan *pb.ClusterEvent)}
+}
+
+func (b *eventBroadcaster) subscribe() (uint64, chan *pb.ClusterEvent) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	id := b.next
+	b.next++
+	ch := make(chan *pb.ClusterEvent, 128)
+	b.subs[id] = ch
+	return id, ch
+}
+
+func (b *eventBroadcaster) unsubscribe(id uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if ch, ok := b.subs[id]; ok {
+		delete(b.subs, id)
+		close(ch)
+	}
+}
+
+func (b *eventBroadcaster) publish(evt *pb.ClusterEvent) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, ch := range b.subs {
+		select {
+		case ch <- evt:
+		default: // subscriber is slow; drop rather than block the orchestrator
+		}
+	}
 }
 
 // NewServer creates a daemon Server backed by the given state directory.
@@ -73,6 +116,7 @@ func NewServer(stateDir string, shutdownFn func()) (*Server, error) {
 		snapMgr:     snapMgr,
 		stateDir:    stateDir,
 		shutdownFn:  shutdownFn,
+		events:      newEventBroadcaster(),
 	}, nil
 }
 
@@ -99,9 +143,24 @@ func (s *Server) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.ApplyResp
 		os.WriteFile(ccPath, data, 0644)
 	}
 
-	if err := s.orch.Up(ctx, cfgPath); err != nil {
+	emit := func(node, msg string) {
+		s.events.publish(&pb.ClusterEvent{
+			Type:      "log",
+			Node:      node,
+			Detail:    msg,
+			Timestamp: timestamppb.Now(),
+		})
+	}
+
+	if err := s.orch.Up(ctx, cfgPath, emit); err != nil {
 		return nil, status.Errorf(codes.Internal, "apply: %v", err)
 	}
+
+	// Signal streaming clients that apply is complete so they can exit cleanly.
+	s.events.publish(&pb.ClusterEvent{
+		Type:      "apply_done",
+		Timestamp: timestamppb.Now(),
+	})
 
 	// Build response from resolved config + live state.
 	cfg, _ := config.Load(cfgPath)
@@ -358,7 +417,22 @@ func (s *Server) StreamLogs(req *pb.NodeRequest, stream pb.Nova_StreamLogsServer
 }
 
 func (s *Server) StreamEvents(_ *emptypb.Empty, stream pb.Nova_StreamEventsServer) error {
-	return status.Error(codes.Unimplemented, "StreamEvents not yet implemented")
+	id, ch := s.events.subscribe()
+	defer s.events.unsubscribe(id)
+
+	for {
+		select {
+		case evt, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			if err := stream.Send(evt); err != nil {
+				return err
+			}
+		case <-stream.Context().Done():
+			return nil
+		}
+	}
 }
 
 // resolveIP returns the guest IP for a node, reading from ssh_endpoint.json

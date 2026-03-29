@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -99,6 +100,34 @@ func startDaemon(stateDir string) error {
 	}
 
 	return fmt.Errorf("daemon socket not found after 10s: %s", socketPath)
+}
+
+// resolveVMName returns the VM name to use when the user didn't specify one.
+// Rules (in order):
+//  1. Exactly one VM exists → use it regardless of its name.
+//  2. A VM named "default" exists → use it.
+//  3. Otherwise → return an error asking the user to specify a name.
+func resolveVMName(ctx context.Context, client pb.NovaClient) (string, error) {
+	resp, err := client.Status(ctx, &emptypb.Empty{})
+	if err != nil {
+		return "", fmt.Errorf("listing VMs: %w", err)
+	}
+	if len(resp.Nodes) == 1 {
+		return resp.Nodes[0].Name, nil
+	}
+	for _, n := range resp.Nodes {
+		if n.Name == "default" {
+			return "default", nil
+		}
+	}
+	if len(resp.Nodes) == 0 {
+		return "", fmt.Errorf("no VMs running — start one with 'nova up'")
+	}
+	names := make([]string, len(resp.Nodes))
+	for i, n := range resp.Nodes {
+		names[i] = n.Name
+	}
+	return "", fmt.Errorf("multiple VMs running (%s) — specify a name", strings.Join(names, ", "))
 }
 
 // novaStateDir returns the Nova state directory path.

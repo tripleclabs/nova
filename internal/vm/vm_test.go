@@ -337,7 +337,7 @@ func TestParseMemoryMB_Whitespace(t *testing.T) {
 // --- generateMAC ---
 
 func TestGenerateMAC_Format(t *testing.T) {
-	mac := generateMAC()
+	mac := generateMAC("test")
 	if !strings.HasPrefix(mac, "52:54:00:") {
 		t.Errorf("MAC should start with 52:54:00:, got %q", mac)
 	}
@@ -346,14 +346,17 @@ func TestGenerateMAC_Format(t *testing.T) {
 	}
 }
 
-func TestGenerateMAC_Unique(t *testing.T) {
-	seen := make(map[string]bool)
-	for i := 0; i < 100; i++ {
-		mac := generateMAC()
-		if seen[mac] {
-			t.Fatalf("duplicate MAC after %d calls: %s", i, mac)
-		}
-		seen[mac] = true
+func TestGenerateMAC_Deterministic(t *testing.T) {
+	// Same seed must always produce the same MAC.
+	mac1 := generateMAC("my-vm")
+	mac2 := generateMAC("my-vm")
+	if mac1 != mac2 {
+		t.Errorf("generateMAC not deterministic: %q != %q", mac1, mac2)
+	}
+	// Different seeds must produce different MACs.
+	mac3 := generateMAC("other-vm")
+	if mac1 == mac3 {
+		t.Errorf("generateMAC produced same MAC for different seeds: %q", mac1)
 	}
 }
 

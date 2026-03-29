@@ -49,12 +49,16 @@ Examples:
 }
 
 func runExport(cmd *cobra.Command, args []string) error {
-	name := "default"
-	if len(args) > 0 {
-		name = args[0]
-	}
-
 	return withDaemon(func(ctx context.Context, client pb.NovaClient) error {
+		name := ""
+		if len(args) > 0 {
+			name = args[0]
+		} else {
+			var err error
+			if name, err = resolveVMName(ctx, client); err != nil {
+				return err
+			}
+		}
 		resp, err := client.Export(ctx, &pb.ExportRequest{
 			Name:          name,
 			Format:        exportFormat,

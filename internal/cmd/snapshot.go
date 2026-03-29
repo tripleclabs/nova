@@ -21,14 +21,14 @@ func newSnapshotCmd() *cobra.Command {
 
 	cmd.AddCommand(
 		&cobra.Command{
-			Use:   "save <name>",
-			Short: "Save a snapshot of all running machines",
-			Args:  cobra.ExactArgs(1),
+			Use:   "save <name> [machine...]",
+			Short: "Save a snapshot of the specified machine(s), or all machines if none given",
+			Args:  cobra.MinimumNArgs(1),
 			RunE:  runSnapshotSave,
 		},
 		&cobra.Command{
 			Use:   "restore <name>",
-			Short: "Restore machines to a saved snapshot",
+			Short: "Restore all machines in a snapshot to their saved state",
 			Args:  cobra.ExactArgs(1),
 			RunE:  runSnapshotRestore,
 		},
@@ -80,7 +80,7 @@ func runSnapshotSave(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := mgr.Save(args[0]); err != nil {
+	if err := mgr.Save(args[0], args[1:]...); err != nil {
 		return err
 	}
 	fmt.Printf("Snapshot %q saved.\n", args[0])

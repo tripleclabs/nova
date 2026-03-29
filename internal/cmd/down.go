@@ -13,12 +13,16 @@ func newDownCmd() *cobra.Command {
 		Use:   "down [name]",
 		Short: "Gracefully stop a running VM",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := "default"
-			if len(args) > 0 {
-				name = args[0]
-			}
-
 			return withDaemon(func(ctx context.Context, client pb.NovaClient) error {
+				name := ""
+				if len(args) > 0 {
+					name = args[0]
+				} else {
+					var err error
+					if name, err = resolveVMName(ctx, client); err != nil {
+						return err
+					}
+				}
 				if _, err := client.NodeStop(ctx, &pb.NodeRequest{Name: name}); err != nil {
 					return err
 				}

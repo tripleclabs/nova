@@ -48,6 +48,7 @@ type Defaults struct {
 	Image  string `hcl:"image,optional"`
 	CPUs   int    `hcl:"cpus,optional"`
 	Memory string `hcl:"memory,optional"`
+	DiskGB int    `hcl:"disk_gb,optional"`
 	Arch   string `hcl:"arch,optional"`
 }
 
@@ -77,6 +78,7 @@ type VM struct {
 	Image         string         `hcl:"image"`
 	CPUs          int            `hcl:"cpus,optional"`
 	Memory        string         `hcl:"memory,optional"`
+	DiskGB        int            `hcl:"disk_gb,optional"`
 	Arch          string         `hcl:"arch,optional"`
 	PortForwards  []PortForward  `hcl:"port_forward,block"`
 	SharedFolders []SharedFolder `hcl:"shared_folder,block"`
@@ -90,6 +92,7 @@ type Node struct {
 	Image         string         `hcl:"image,optional"`
 	CPUs          int            `hcl:"cpus,optional"`
 	Memory        string         `hcl:"memory,optional"`
+	DiskGB        int            `hcl:"disk_gb,optional"`
 	Arch          string         `hcl:"arch,optional"`
 	IP            string         `hcl:"ip,optional"`
 	PortForwards  []PortForward  `hcl:"port_forward,block"`
@@ -124,6 +127,7 @@ type ResolvedNode struct {
 	Image         string
 	CPUs          int
 	Memory        string
+	DiskGB        int
 	Arch          string
 	IP            string
 	PortForwards  []PortForward
@@ -233,6 +237,7 @@ func (c *Config) ResolveNodes() []ResolvedNode {
 			Image:         c.VM.Image,
 			CPUs:          c.VM.CPUs,
 			Memory:        c.VM.Memory,
+			DiskGB:        c.VM.DiskGB,
 			Arch:          c.VM.Arch,
 			PortForwards:  c.VM.PortForwards,
 			SharedFolders: c.VM.SharedFolders,
@@ -250,6 +255,7 @@ func (c *Config) ResolveNodes() []ResolvedNode {
 			Image:         n.Image,
 			CPUs:          n.CPUs,
 			Memory:        n.Memory,
+			DiskGB:        n.DiskGB,
 			Arch:          n.Arch,
 			IP:            n.IP,
 			PortForwards:  n.PortForwards,
@@ -320,6 +326,9 @@ func applyAndValidateNodes(cfg *Config) error {
 		if cfg.Defaults.Memory != "" {
 			def.Memory = cfg.Defaults.Memory
 		}
+		if cfg.Defaults.DiskGB != 0 {
+			def.DiskGB = cfg.Defaults.DiskGB
+		}
 		if cfg.Defaults.Arch != "" {
 			def.Arch = cfg.Defaults.Arch
 		}
@@ -354,6 +363,9 @@ func applyAndValidateNodes(cfg *Config) error {
 		}
 		if n.Memory == "" {
 			n.Memory = def.Memory
+		}
+		if n.DiskGB == 0 {
+			n.DiskGB = def.DiskGB
 		}
 		if n.Arch == "" {
 			n.Arch = def.Arch

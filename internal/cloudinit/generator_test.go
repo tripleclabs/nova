@@ -390,9 +390,12 @@ func TestGenerate_HostsNoMounts(t *testing.T) {
 	if !strings.Contains(s, "append: true") {
 		t.Error("should set append: true for hosts file")
 	}
-	// No mounts means no runcmd should be generated (no mkdir).
-	if strings.Contains(s, "mkdir") {
-		t.Error("should not contain mkdir when there are no mounts")
+	// No mounts means no mount-point mkdir, but sshd setup runcmds are always present.
+	if strings.Contains(s, "mkdir -p /workspace") || strings.Contains(s, "mkdir -p /mnt") {
+		t.Error("should not contain mount-point mkdir when there are no mounts")
+	}
+	if !strings.Contains(s, "mkdir -p /etc/ssh/sshd_config.d") {
+		t.Error("should always contain sshd setup runcmd")
 	}
 }
 

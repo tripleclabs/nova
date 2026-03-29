@@ -21,14 +21,15 @@ import (
 
 // qemuEngine implements the Hypervisor interface using QEMU/KVM on Linux.
 type qemuEngine struct {
-	mu      sync.Mutex
-	state   State
-	cfg     VMConfig
-	cmd     *exec.Cmd
-	proc    *os.Process // set for reattached VMs (not started by this process)
-	qmpSock string      // path to QMP Unix socket
-	qmp     *qmpClient  // QMP connection for VM control
-	waitCh  chan error   // receives process exit error from background watcher
+	mu          sync.Mutex
+	state       State
+	cfg         VMConfig
+	cmd         *exec.Cmd
+	proc        *os.Process // set for reattached VMs (not started by this process)
+	qmpSock     string      // path to QMP Unix socket
+	stderrPath  string      // path to QEMU stderr log file
+	qmp         *qmpClient  // QMP connection for VM control
+	waitCh      chan error   // receives process exit error from background watcher
 }
 
 func newQEMUEngine() (Hypervisor, error) {
@@ -59,6 +60,15 @@ func (e *qemuEngine) Start(ctx context.Context, cfg VMConfig) error {
 		// Pass the QEMU-side socketpair fd as fd=3 in the child process.
 		e.cmd.ExtraFiles = []*os.File{cfg.Network.SwitchFile}
 	}
+
+	// Capture QEMU stderr to a log file for diagnostics.
+	stderrPath := filepath.Join(cfg.MachineDir, "qemu-stderr.log")
+	e.stderrPath = stderrPath
+	if stderrFile, err := os.Create(stderrPath); err == nil {
+		e.cmd.Stderr = stderrFile
+		defer stderrFile.Close()
+	}
+
 	if err := e.cmd.Start(); err != nil {
 		e.state = StateError
 		return fmt.Errorf("starting QEMU process: %w", err)
@@ -89,10 +99,10 @@ func (e *qemuEngine) Start(ctx context.Context, cfg VMConfig) error {
 		os.Remove(e.qmpSock)
 	}()
 
-	qmp, err := connectQMP(ctx, e.qmpSock)
+	qmp, err := e.waitForQMP(ctx)
 	if err != nil {
 		e.forceKillLocked()
-		return fmt.Errorf("connecting to QMP: %w", err)
+		return err
 	}
 	e.qmp = qmp
 
@@ -104,6 +114,36 @@ func (e *qemuEngine) Start(ctx context.Context, cfg VMConfig) error {
 	e.state = StateRunning
 	slog.Info("VM started", "name", cfg.Name)
 	return nil
+}
+
+// waitForQMP connects to the QMP socket, but also watches waitCh so that a
+// QEMU startup crash is detected immediately rather than after a 30-second timeout.
+// Must be called with e.mu held (it releases and re-acquires around the blocking connect).
+func (e *qemuEngine) waitForQMP(ctx context.Context) (*qmpClient, error) {
+	type result struct {
+		qmp *qmpClient
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		q, err := connectQMP(ctx, e.qmpSock)
+		ch <- result{q, err}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.qmp, r.err
+	case exitErr := <-e.waitCh:
+		// Re-queue the exit error so the background watcher goroutine can read it.
+		e.waitCh <- exitErr
+		// Try to include QEMU's stderr output in the error message.
+		if e.stderrPath != "" {
+			if stderrBytes, err := os.ReadFile(e.stderrPath); err == nil && len(stderrBytes) > 0 {
+				return nil, fmt.Errorf("QEMU exited unexpectedly: %s", strings.TrimSpace(string(stderrBytes)))
+			}
+		}
+		return nil, fmt.Errorf("QEMU exited unexpectedly before QMP socket was ready (check %s for details)", e.stderrPath)
+	}
 }
 
 func (e *qemuEngine) Stop(ctx context.Context) error {

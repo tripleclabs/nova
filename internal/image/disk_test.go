@@ -66,7 +66,7 @@ func TestCreateOverlay(t *testing.T) {
 	}
 
 	machineDir := filepath.Join(dir, "machines", "test-vm")
-	overlayPath, err := CreateOverlay(basePath, machineDir)
+	overlayPath, err := CreateOverlay(basePath, machineDir, 0)
 	if err != nil {
 		t.Fatalf("CreateOverlay: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestCreateOverlay_RawBase(t *testing.T) {
 	}
 
 	machineDir := filepath.Join(dir, "machines", "test-vm-raw")
-	overlayPath, err := CreateOverlay(basePath, machineDir)
+	overlayPath, err := CreateOverlay(basePath, machineDir, 0)
 	if err != nil {
 		t.Fatalf("CreateOverlay with raw base: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestCreateOverlay_NonExistentBaseImage(t *testing.T) {
 	dir := t.TempDir()
 	machineDir := filepath.Join(dir, "machines", "test-vm")
 
-	_, err := CreateOverlay("/nonexistent/base.qcow2", machineDir)
+	_, err := CreateOverlay("/nonexistent/base.qcow2", machineDir, 0)
 	if err == nil {
 		t.Error("expected error for non-existent base image")
 	}

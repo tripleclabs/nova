@@ -43,8 +43,10 @@ func DetectFormat(path string) (DiskFormat, error) {
 // CreateOverlay creates a Copy-on-Write overlay disk backed by the given base image.
 // For qcow2 base images, it uses qemu-img create -f qcow2 -b.
 // For raw images, it creates a qcow2 overlay referencing the raw backing file.
+// If sizeGB > 0 the virtual disk is expanded to that size; otherwise it inherits
+// the base image size.
 // Returns the path to the new overlay disk.
-func CreateOverlay(baseImage, machineDir string) (string, error) {
+func CreateOverlay(baseImage, machineDir string, sizeGB int) (string, error) {
 	overlayPath := filepath.Join(machineDir, "disk.qcow2")
 
 	if err := os.MkdirAll(machineDir, 0755); err != nil {
@@ -67,13 +69,12 @@ func CreateOverlay(baseImage, machineDir string) (string, error) {
 		backingFmt = "raw"
 	}
 
-	// qemu-img create -f qcow2 -b <base> -F <backing_fmt> <overlay>
-	cmd := exec.Command("qemu-img", "create",
-		"-f", "qcow2",
-		"-b", absBase,
-		"-F", backingFmt,
-		overlayPath,
-	)
+	// qemu-img create -f qcow2 -b <base> -F <backing_fmt> <overlay> [<size>]
+	args := []string{"create", "-f", "qcow2", "-b", absBase, "-F", backingFmt, overlayPath}
+	if sizeGB > 0 {
+		args = append(args, fmt.Sprintf("%dG", sizeGB))
+	}
+	cmd := exec.Command("qemu-img", args...)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

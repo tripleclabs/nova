@@ -4,7 +4,6 @@ package vm
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -94,7 +93,11 @@ func NewOrchestrator() (*Orchestrator, error) {
 }
 
 // Up parses config and boots all nodes defined in it.
-func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
+// emit is called with (nodeName, message) for each progress event; pass nil to suppress output.
+func (o *Orchestrator) Up(ctx context.Context, cfgPath string, emit func(string, string)) error {
+	if emit == nil {
+		emit = func(string, string) {}
+	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return err
@@ -136,7 +139,7 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string) error {
 	}
 
 	for i, node := range nodes {
-		if err := o.upNode(ctx, cfgPath, node, hostsEntries, userDataPath, i, isMultiNode, subnet); err != nil {
+		if err := o.upNode(ctx, cfgPath, node, hostsEntries, userDataPath, i, isMultiNode, subnet, emit); err != nil {
 			return fmt.Errorf("node %q: %w", node.Name, err)
 		}
 	}
@@ -153,14 +156,21 @@ func (o *Orchestrator) upNode(
 	nodeIndex int,
 	isMultiNode bool,
 	subnet string,
+	emit func(string, string),
 ) error {
 	machineID := node.Name
 
-	// Check if already running.
+	// Check for an existing machine record.
 	if existing, err := o.store.Get(machineID); err == nil {
 		if existing.State == state.StateRunning {
 			return fmt.Errorf("already running (use 'nova down' first)")
 		}
+		// Stopped VM: restart it using the existing disk if present.
+		diskPath := existingDiskPath(o.store.MachineDir(machineID))
+		if diskPath != "" {
+			return o.restartNode(ctx, node, existing, diskPath, nodeIndex, isMultiNode, subnet, emit)
+		}
+		// No disk found (e.g. partial creation) — fall through to full creation.
 		o.store.Delete(machineID)
 	}
 
@@ -184,17 +194,22 @@ func (o *Orchestrator) upNode(
 
 	// Pull image.
 	slog.Info("pulling image", "node", node.Name, "ref", node.Image)
+	emit(node.Name, "Pulling image...")
+	var lastEmittedPct int64 = -1
 	baseDisk, err := o.images.Pull(ctx, node.Image, func(complete, total int64) {
 		if total > 0 {
-			pct := float64(complete) / float64(total) * 100
-			fmt.Printf("\r[%s] Pulling image... %.0f%%", node.Name, pct)
+			pct := complete * 100 / total
+			bucket := pct / 10 * 10 // emit at 0%, 10%, 20%, ..., 100%
+			if bucket != lastEmittedPct {
+				lastEmittedPct = bucket
+				emit(node.Name, fmt.Sprintf("Pulling image... %d%%", pct))
+			}
 		}
 	})
 	if err != nil {
 		o.store.Delete(machineID)
 		return fmt.Errorf("pulling image: %w", err)
 	}
-	fmt.Println()
 
 	// Look up OS metadata from the image cache for OS-aware cloud-init config.
 	var imageOS string
@@ -203,7 +218,7 @@ func (o *Orchestrator) upNode(
 	}
 
 	// Create CoW overlay.
-	overlayPath, err := image.CreateOverlay(baseDisk, machineDir)
+	overlayPath, err := image.CreateOverlay(baseDisk, machineDir, node.DiskGB)
 	if err != nil {
 		o.store.Delete(machineID)
 		return fmt.Errorf("creating disk overlay: %w", err)
@@ -229,7 +244,7 @@ func (o *Orchestrator) upNode(
 	}
 
 	// Generate deterministic MAC address for this node.
-	mac := generateMAC()
+	mac := generateMAC(machineID)
 
 	// Build cloud-init config.
 	needsRosetta := runtime.GOOS == "darwin" && hypervisor.NeedsEmulation(node.Arch)
@@ -246,7 +261,7 @@ func (o *Orchestrator) upNode(
 	// Needed before cloud-init generation so network-config can reference both NICs.
 	var switchMAC string
 	if o.sw != nil {
-		switchMAC = generateMAC()
+		switchMAC = generateMAC(machineID + "-switch")
 	}
 
 	// Assign static IPs for multi-node, or fixed IP for single-VM with switch.
@@ -361,9 +376,16 @@ func (o *Orchestrator) upNode(
 	}
 
 	for _, sf := range node.SharedFolders {
+		hostPath, err := expandPath(sf.HostPath)
+		if err != nil {
+			return fmt.Errorf("expanding shared folder path %q: %w", sf.HostPath, err)
+		}
+		if err := os.MkdirAll(hostPath, 0755); err != nil {
+			return fmt.Errorf("creating shared folder %q: %w", hostPath, err)
+		}
 		vmCfg.Shares = append(vmCfg.Shares, hypervisor.ShareConfig{
 			Tag:      sanitizeTag(sf.GuestPath),
-			HostPath: sf.HostPath,
+			HostPath: hostPath,
 			ReadOnly: sf.ReadOnly,
 		})
 	}
@@ -385,7 +407,7 @@ func (o *Orchestrator) upNode(
 		return err
 	}
 
-	fmt.Printf("Starting %q (%d CPUs, %dMB RAM)...\n", node.Name, vmCfg.CPUs, vmCfg.MemoryMB)
+	emit(node.Name, fmt.Sprintf("Starting (%d CPUs, %dMB RAM)...", vmCfg.CPUs, vmCfg.MemoryMB))
 	if err := hv.Start(ctx, vmCfg); err != nil {
 		o.store.Delete(machineID)
 		return fmt.Errorf("starting VM: %w", err)
@@ -429,24 +451,24 @@ func (o *Orchestrator) upNode(
 		sshEP.Host = "10.0.2.15"
 	} else {
 		// macOS: discover the guest IP from DHCP leases now that the VM has booted.
-		fmt.Printf("[%s] Discovering guest IP...\n", node.Name)
+		emit(node.Name, "Discovering guest IP...")
 		guestIP, err := hv.GuestIP()
 		if err != nil {
 			slog.Warn("guest IP discovery failed — VM may still be booting", "node", node.Name, "error", err)
 		} else {
 			sshEP.Host = guestIP
-			fmt.Printf("[%s] Guest IP: %s\n", node.Name, guestIP)
+			emit(node.Name, fmt.Sprintf("Guest IP: %s", guestIP))
 		}
 	}
 	if epData, err := json.Marshal(sshEP); err == nil {
 		os.WriteFile(filepath.Join(machineDir, "ssh_endpoint.json"), epData, 0644)
 	}
 
-	fmt.Printf("%q is running.\n", node.Name)
+	emit(node.Name, "running")
 
 	// Run provisioners if any are defined.
 	if len(node.Provisioners) > 0 {
-		fmt.Printf("[%s] Waiting for SSH before provisioning...\n", node.Name)
+		emit(node.Name, "Waiting for SSH...")
 		if err := o.WaitReady(ctx, machineID); err != nil {
 			return fmt.Errorf("waiting for SSH: %w", err)
 		}
@@ -469,16 +491,11 @@ func (o *Orchestrator) upNode(
 			PrivateKey: keyData,
 		}
 
-		output := &provisioner.OutputWriter{
-			Prefix: node.Name,
-			Writer: os.Stdout,
-		}
-
-		fmt.Printf("[%s] Running %d provisioner(s)...\n", node.Name, len(node.Provisioners))
-		if err := provisioner.RunAll(ctx, sshCfg, node.Provisioners, output); err != nil {
+		emit(node.Name, fmt.Sprintf("Running %d provisioner(s)...", len(node.Provisioners)))
+		if err := provisioner.RunAll(ctx, sshCfg, node.Provisioners, &emitWriter{node: node.Name, emit: emit}); err != nil {
 			return fmt.Errorf("provisioning: %w", err)
 		}
-		fmt.Printf("[%s] Provisioning complete.\n", node.Name)
+		emit(node.Name, "Provisioning complete.")
 	}
 
 	return nil
@@ -794,6 +811,174 @@ func parseMemoryMB(mem string) (uint64, error) {
 	}
 }
 
+// existingDiskPath returns the path of an existing VM disk in machineDir,
+// or an empty string if none is found.
+func existingDiskPath(machineDir string) string {
+	for _, name := range []string{"disk.qcow2", "disk.raw"} {
+		p := filepath.Join(machineDir, name)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// restartNode boots a previously-stopped VM reusing its existing disk and SSH
+// keys, skipping image pull, cloud-init generation, and provisioners.
+func (o *Orchestrator) restartNode(
+	ctx context.Context,
+	node config.ResolvedNode,
+	machine *state.Machine,
+	diskPath string,
+	nodeIndex int,
+	isMultiNode bool,
+	subnet string,
+	emit func(string, string),
+) error {
+	machineID := node.Name
+	machineDir := o.store.MachineDir(machineID)
+
+	unlock, err := o.store.Lock(machineID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	memMB, err := parseMemoryMB(node.Memory)
+	if err != nil {
+		return err
+	}
+
+	mac := generateMAC(machineID)
+	var switchMAC string
+	if o.sw != nil {
+		switchMAC = generateMAC(machineID + "-switch")
+	}
+
+	vmCfg := hypervisor.VMConfig{
+		Name:       node.Name,
+		Arch:       node.Arch,
+		CPUs:       uint(node.CPUs),
+		MemoryMB:   memMB,
+		DiskPath:   diskPath,
+		LogPath:    filepath.Join(machineDir, "console.log"),
+		MachineDir: machineDir,
+		PIDPath:    filepath.Join(machineDir, "hypervisor.pid"),
+	}
+	// Reattach cloud-init ISO only if it still exists (first-boot data; sane to pass again).
+	if cidataPath := filepath.Join(machineDir, "cidata.iso"); fileExists(cidataPath) {
+		vmCfg.CIDATAPath = cidataPath
+	}
+
+	for _, pf := range node.PortForwards {
+		vmCfg.Network.PortForwards = append(vmCfg.Network.PortForwards, hypervisor.PortForward{
+			HostPort:  pf.Host,
+			GuestPort: pf.Guest,
+			Protocol:  pf.Protocol,
+		})
+	}
+
+	vmCfg.Network.MACAddress = mac
+	if o.sw != nil {
+		switchFile, err := o.sw.NewPort(node.Name)
+		if err != nil {
+			return fmt.Errorf("allocating switch port: %w", err)
+		}
+		vmCfg.Network.SwitchFile = switchFile
+		vmCfg.Network.SwitchMAC = switchMAC
+		if !isMultiNode {
+			node.IP = "10.0.0.2"
+			vmCfg.Network.StaticIP = node.IP
+		}
+	}
+	if isMultiNode {
+		vmCfg.Network.MultiNode = true
+		vmCfg.Network.StaticIP = node.IP
+		vmCfg.Network.Subnet = subnet
+		if runtime.GOOS == "linux" && o.sw == nil {
+			vmCfg.Network.PortForwards = append(vmCfg.Network.PortForwards, hypervisor.PortForward{
+				HostPort:  2200 + nodeIndex,
+				GuestPort: 22,
+				Protocol:  "tcp",
+			})
+		}
+	}
+
+	for _, sf := range node.SharedFolders {
+		hostPath, err := expandPath(sf.HostPath)
+		if err != nil {
+			return fmt.Errorf("expanding shared folder path %q: %w", sf.HostPath, err)
+		}
+		if err := os.MkdirAll(hostPath, 0755); err != nil {
+			return fmt.Errorf("creating shared folder %q: %w", hostPath, err)
+		}
+		vmCfg.Shares = append(vmCfg.Shares, hypervisor.ShareConfig{
+			Tag:      sanitizeTag(sf.GuestPath),
+			HostPath: hostPath,
+			ReadOnly: sf.ReadOnly,
+		})
+	}
+
+	var hostPorts []int
+	for _, pf := range vmCfg.Network.PortForwards {
+		hostPorts = append(hostPorts, pf.HostPort)
+	}
+	if err := network.CheckPortsAvailable(hostPorts); err != nil {
+		return fmt.Errorf("port conflict: %w", err)
+	}
+
+	hv, err := hypervisor.New()
+	if err != nil {
+		return err
+	}
+
+	emit(node.Name, fmt.Sprintf("Starting (%d CPUs, %dMB RAM)...", vmCfg.CPUs, vmCfg.MemoryMB))
+	if err := hv.Start(ctx, vmCfg); err != nil {
+		return fmt.Errorf("starting VM: %w", err)
+	}
+	if vmCfg.Network.SwitchFile != nil {
+		vmCfg.Network.SwitchFile.Close()
+	}
+
+	o.mu.Lock()
+	o.hypervisors[machineID] = hv
+	o.mu.Unlock()
+
+	machine.State = state.StateRunning
+	machine.PID = readPIDFile(filepath.Join(machineDir, "hypervisor.pid"))
+	if err := o.store.Update(machine); err != nil {
+		hv.ForceKill()
+		return err
+	}
+
+	// Rewrite SSH endpoint (port-forward ports may have shifted).
+	sshEP := SSHEndpoint{Port: 22}
+	if o.sw != nil && runtime.GOOS == "linux" {
+		sshEP.Host = node.IP
+	} else if isMultiNode && runtime.GOOS == "linux" {
+		sshEP.Host = "127.0.0.1"
+		sshEP.Port = 2200 + nodeIndex
+	} else if runtime.GOOS == "linux" {
+		sshEP.Host = "10.0.2.15"
+	} else {
+		emit(node.Name, "Discovering guest IP...")
+		if guestIP, err := hv.GuestIP(); err == nil {
+			sshEP.Host = guestIP
+		}
+	}
+	if epData, err := json.Marshal(sshEP); err == nil {
+		os.WriteFile(filepath.Join(machineDir, "ssh_endpoint.json"), epData, 0644)
+	}
+
+	emit(node.Name, "running")
+	return nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func hashConfig(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -803,13 +988,14 @@ func hashConfig(path string) string {
 	return fmt.Sprintf("%x", h[:8])
 }
 
-// generateMAC returns a random locally-administered unicast MAC address.
-// Uses the 52:54:00 prefix (QEMU convention) with 3 random bytes.
-// Each VM instance gets a unique MAC so DHCP assigns distinct IPs.
-func generateMAC() string {
-	b := make([]byte, 3)
-	rand.Read(b)
-	return fmt.Sprintf("52:54:00:%02x:%02x:%02x", b[0], b[1], b[2])
+// generateMAC derives a stable locally-administered MAC from a seed string.
+// Using SHA-256 ensures unique, reproducible addresses per machine/NIC without
+// storing them separately — the same seed always produces the same MAC.
+func generateMAC(seed string) string {
+	h := sha256.Sum256([]byte(seed))
+	// Set locally administered bit (bit 1 of first octet), clear multicast bit (bit 0).
+	b0 := (h[0] &^ 0x01) | 0x02
+	return fmt.Sprintf("52:54:00:%02x:%02x:%02x", b0, h[1], h[2])
 }
 
 // SSHEndpoint describes how to reach a VM via SSH from the host.
@@ -836,11 +1022,55 @@ func (o *Orchestrator) readSSHEndpoint(name string) (string, int, error) {
 	return ip, 22, nil
 }
 
+// emitWriter adapts an emit callback into an io.Writer for provisioner output.
+// Each newline-terminated line is forwarded as a separate event.
+type emitWriter struct {
+	node string
+	emit func(string, string)
+	buf  strings.Builder
+}
+
+func (w *emitWriter) Write(p []byte) (int, error) {
+	w.buf.Write(p)
+	for {
+		s := w.buf.String()
+		idx := strings.IndexByte(s, '\n')
+		if idx < 0 {
+			break
+		}
+		if line := s[:idx]; line != "" {
+			w.emit(w.node, line)
+		}
+		w.buf.Reset()
+		w.buf.WriteString(s[idx+1:])
+	}
+	return len(p), nil
+}
+
+// expandPath expands a leading ~ to the current user's home directory
+// and resolves the result to an absolute path.
+func expandPath(p string) (string, error) {
+	if strings.HasPrefix(p, "~/") || p == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolving home directory: %w", err)
+		}
+		p = home + p[1:]
+	}
+	return filepath.Abs(p)
+}
+
 func sanitizeTag(guestPath string) string {
 	tag := strings.ReplaceAll(guestPath, "/", "_")
 	tag = strings.TrimLeft(tag, "_")
 	if tag == "" {
 		tag = "share"
+	}
+	// 9p mount tags are limited to 31 bytes by the kernel.
+	// If too long, keep a 22-char prefix + underscore + 8 hex chars of SHA-256.
+	if len(tag) > 31 {
+		sum := sha256.Sum256([]byte(tag))
+		tag = fmt.Sprintf("%s_%08x", tag[:22], sum[:4])
 	}
 	return tag
 }

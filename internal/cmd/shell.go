@@ -17,29 +17,41 @@ import (
 
 var shellCommand string
 
+var shellTimeout time.Duration
+
 func newShellCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "shell [name]",
 		Short: "Open an SSH session to a running VM",
 		RunE:  runShell,
 	}
-	cmd.Flags().StringVarP(&shellCommand, "command", "c", "", "execute a command instead of opening an interactive shell")
+	cmd.Flags().StringVarP(&shellCommand, "command", "c", "", "execute a command (streams output; use --timeout for buffered mode)")
+	cmd.Flags().DurationVar(&shellTimeout, "timeout", 0, "if set, run via daemon RPC with this timeout and buffer output")
 	return cmd
 }
 
 func runShell(cmd *cobra.Command, args []string) error {
-	name := "default"
+	name := ""
 	if len(args) > 0 {
 		name = args[0]
 	}
 
-	// Non-interactive mode: use the daemon's Exec RPC.
-	if shellCommand != "" {
-		return withDaemon(func(ctx context.Context, client pb.NovaClient) error {
+	// Resolve name and endpoint via the daemon.
+	var guestIP string
+	err := withDaemon(func(ctx context.Context, client pb.NovaClient) error {
+		if name == "" {
+			var err error
+			if name, err = resolveVMName(ctx, client); err != nil {
+				return err
+			}
+		}
+
+		// --timeout: buffered command mode via daemon Exec RPC.
+		if shellCommand != "" && shellTimeout > 0 {
 			resp, err := client.Exec(ctx, &pb.ExecRequest{
 				Node:    name,
 				Command: shellCommand,
-				Timeout: durationpb.New(30 * time.Second),
+				Timeout: durationpb.New(shellTimeout),
 			})
 			if err != nil {
 				return err
@@ -52,13 +64,8 @@ func runShell(cmd *cobra.Command, args []string) error {
 				os.Exit(int(resp.ExitCode))
 			}
 			return nil
-		})
-	}
+		}
 
-	// Interactive mode: get the guest IP from the daemon, then exec ssh directly
-	// so we get a proper PTY.
-	var guestIP string
-	err := withDaemon(func(ctx context.Context, client pb.NovaClient) error {
 		resp, err := client.NodeStatus(ctx, &pb.NodeRequest{Name: name})
 		if err != nil {
 			return fmt.Errorf("VM %q not found: %w", name, err)
@@ -71,6 +78,10 @@ func runShell(cmd *cobra.Command, args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	// Buffered --timeout mode handled everything inside withDaemon; nothing left to do.
+	if guestIP == "" && shellCommand != "" && shellTimeout > 0 {
+		return nil
 	}
 
 	machineDir := filepath.Join(novaStateDir(), "machines", name)
@@ -107,18 +118,30 @@ func runShell(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("could not determine guest IP for %q — try 'nova down %s && nova up'", name, name)
 	}
 
-	return sshInteractive(sshHost, sshPort, sshUser, keyPath)
+	return sshExec(sshHost, sshPort, sshUser, keyPath, shellCommand)
 }
 
-// sshInteractive launches an interactive SSH session with a PTY.
-func sshInteractive(host, port, user, keyPath string) error {
+// sshExec launches an SSH session. If command is non-empty it runs that command
+// and streams stdout/stderr; otherwise it opens an interactive PTY shell.
+// Agent forwarding is enabled when SSH_AUTH_SOCK is set in the environment.
+func sshExec(host, port, user, keyPath, command string) error {
 	sshArgs := []string{
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "LogLevel=ERROR",
 		"-i", keyPath,
 		"-p", port,
-		fmt.Sprintf("%s@%s", user, host),
+	}
+
+	// Forward the SSH agent when one is available.
+	if os.Getenv("SSH_AUTH_SOCK") != "" {
+		sshArgs = append(sshArgs, "-A")
+	}
+
+	sshArgs = append(sshArgs, fmt.Sprintf("%s@%s", user, host))
+
+	if command != "" {
+		sshArgs = append(sshArgs, command)
 	}
 
 	for attempt := 0; attempt < 30; attempt++ {
@@ -136,6 +159,12 @@ func sshInteractive(host, port, user, keyPath string) error {
 		// timeout). Keep retrying. Any other exit code means the remote session or
 		// command ended — return immediately without retrying.
 		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 255 {
+			return err
+		}
+
+		// Only retry on connection failures for interactive sessions;
+		// for commands, a failed connection is immediately an error.
+		if command != "" {
 			return err
 		}
 
