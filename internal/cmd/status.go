@@ -6,7 +6,7 @@ import (
 	"os"
 	"text/tabwriter"
 
-	pb "github.com/3clabs/nova/pkg/novapb/nova/v1"
+	pb "github.com/tripleclabs/nova/pkg/novapb/nova/v1"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"github.com/spf13/cobra"
 )

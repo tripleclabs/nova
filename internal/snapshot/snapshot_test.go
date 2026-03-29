@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/3clabs/nova/internal/state"
+	"github.com/tripleclabs/nova/internal/state"
 )
 
 func hasQemuImg() bool {

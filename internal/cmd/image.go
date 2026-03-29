@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"text/tabwriter"
 
-	"github.com/3clabs/nova/internal/distro"
-	"github.com/3clabs/nova/internal/image"
+	"github.com/tripleclabs/nova/internal/distro"
+	"github.com/tripleclabs/nova/internal/image"
 	"github.com/spf13/cobra"
 )
 

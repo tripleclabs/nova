@@ -18,13 +18,13 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/3clabs/nova/internal/cloudinit"
-	"github.com/3clabs/nova/internal/config"
-	"github.com/3clabs/nova/internal/hypervisor"
-	"github.com/3clabs/nova/internal/image"
-	"github.com/3clabs/nova/internal/network"
-	"github.com/3clabs/nova/internal/provisioner"
-	"github.com/3clabs/nova/internal/state"
+	"github.com/tripleclabs/nova/internal/cloudinit"
+	"github.com/tripleclabs/nova/internal/config"
+	"github.com/tripleclabs/nova/internal/hypervisor"
+	"github.com/tripleclabs/nova/internal/image"
+	"github.com/tripleclabs/nova/internal/network"
+	"github.com/tripleclabs/nova/internal/provisioner"
+	"github.com/tripleclabs/nova/internal/state"
 )
 
 // ExecResult holds the output of an SSH command execution.

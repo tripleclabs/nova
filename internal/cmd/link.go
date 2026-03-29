@@ -10,7 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/3clabs/nova/internal/network"
+	"github.com/tripleclabs/nova/internal/network"
 	"github.com/spf13/cobra"
 )
 

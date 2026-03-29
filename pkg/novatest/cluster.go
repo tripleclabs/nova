@@ -32,7 +32,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	pb "github.com/3clabs/nova/pkg/novapb/nova/v1"
+	pb "github.com/tripleclabs/nova/pkg/novapb/nova/v1"
 )
 
 // Cluster is the primary handle for a Nova test environment.

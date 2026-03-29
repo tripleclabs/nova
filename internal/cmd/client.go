@@ -14,7 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	pb "github.com/3clabs/nova/pkg/novapb/nova/v1"
+	pb "github.com/tripleclabs/nova/pkg/novapb/nova/v1"
 )
 
 // daemonClient returns a connected gRPC client to the Nova daemon,

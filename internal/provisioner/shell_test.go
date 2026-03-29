@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/3clabs/nova/internal/config"
+	"github.com/tripleclabs/nova/internal/config"
 )
 
 func TestShellQuote(t *testing.T) {

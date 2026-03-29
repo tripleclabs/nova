@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/3clabs/nova/internal/state"
+	"github.com/tripleclabs/nova/internal/state"
 )
 
 // Snapshot holds metadata about a saved cluster snapshot.

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/3clabs/nova/internal/distro"
+	"github.com/tripleclabs/nova/internal/distro"
 	"gopkg.in/yaml.v3"
 )
 

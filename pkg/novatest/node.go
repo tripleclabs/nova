@@ -6,7 +6,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	pb "github.com/3clabs/nova/pkg/novapb/nova/v1"
+	pb "github.com/tripleclabs/nova/pkg/novapb/nova/v1"
 )
 
 // Node represents a single VM in the test cluster.

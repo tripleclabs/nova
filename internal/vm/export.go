@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/3clabs/nova/internal/sysprep"
+	"github.com/tripleclabs/nova/internal/sysprep"
 )
 
 // ExportFormat represents a supported output disk format.

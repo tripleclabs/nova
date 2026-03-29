@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/3clabs/nova/internal/network"
-	"github.com/3clabs/nova/internal/state"
-	"github.com/3clabs/nova/internal/vm"
+	"github.com/tripleclabs/nova/internal/network"
+	"github.com/tripleclabs/nova/internal/state"
+	"github.com/tripleclabs/nova/internal/vm"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"

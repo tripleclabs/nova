@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/3clabs/nova/internal/config"
+	"github.com/tripleclabs/nova/internal/config"
 )
 
 // SSHConfig holds the connection details for reaching a guest VM.

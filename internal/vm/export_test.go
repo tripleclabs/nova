@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/3clabs/nova/internal/state"
+	"github.com/tripleclabs/nova/internal/state"
 )
 
 // --- ParseExportFormat ---

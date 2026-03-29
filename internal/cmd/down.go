@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	pb "github.com/3clabs/nova/pkg/novapb/nova/v1"
+	pb "github.com/tripleclabs/nova/pkg/novapb/nova/v1"
 	"github.com/spf13/cobra"
 )
 

@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/3clabs/nova/internal/daemon"
+	"github.com/tripleclabs/nova/internal/daemon"
 	"github.com/spf13/cobra"
 )
 

@@ -17,12 +17,12 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/3clabs/nova/internal/config"
-	"github.com/3clabs/nova/internal/network"
-	"github.com/3clabs/nova/internal/snapshot"
-	"github.com/3clabs/nova/internal/state"
-	"github.com/3clabs/nova/internal/vm"
-	pb "github.com/3clabs/nova/pkg/novapb/nova/v1"
+	"github.com/tripleclabs/nova/internal/config"
+	"github.com/tripleclabs/nova/internal/network"
+	"github.com/tripleclabs/nova/internal/snapshot"
+	"github.com/tripleclabs/nova/internal/state"
+	"github.com/tripleclabs/nova/internal/vm"
+	pb "github.com/tripleclabs/nova/pkg/novapb/nova/v1"
 )
 
 // Server implements the nova.v1.NovaServer gRPC service.

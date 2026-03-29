@@ -53,7 +53,7 @@ nova down
 ### Linux
 
 ```bash
-go install github.com/3clabs/nova/cmd/nova@latest
+go install github.com/tripleclabs/nova/cmd/nova@latest
 ```
 
 ### macOS
@@ -61,7 +61,7 @@ go install github.com/3clabs/nova/cmd/nova@latest
 macOS requires the `com.apple.security.virtualization` entitlement to use Virtualization.framework. Install and codesign in one block:
 
 ```bash
-go install github.com/3clabs/nova/cmd/nova@latest
+go install github.com/tripleclabs/nova/cmd/nova@latest
 codesign --force -s - --entitlements <(cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -1,4 +1,4 @@
-module github.com/3clabs/nova
+module github.com/tripleclabs/nova
 
 go 1.26.1
 
