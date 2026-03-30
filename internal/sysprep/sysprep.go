@@ -212,6 +212,9 @@ func buildProfile(family OSFamily, opts Options) []Step {
 			Step{"Remove DHCP leases", p + " rm -f /var/lib/dhcpcd/* /var/lib/udhcpc/* 2>/dev/null || true"},
 			Step{"Remove udev persistent rules", p + " rm -f /etc/udev/rules.d/70-persistent-* 2>/dev/null || true"},
 			Step{"Clear ash history", p + " find /home /root -maxdepth 2 -name '.ash_history' -delete 2>/dev/null || true"},
+			// Fix any /bin/bash login shells — bash is not installed on Alpine by default.
+			// If bash was explicitly installed the check passes and nothing changes.
+			Step{"Fix bash login shells", "command -v bash >/dev/null 2>&1 || " + p + " sed -i 's|:/bin/bash$|:/bin/ash|' /etc/passwd"},
 		)
 
 	case OSFedora:

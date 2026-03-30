@@ -94,8 +94,29 @@ func TestBuildProfile_Alpine(t *testing.T) {
 	assertHasStep(t, steps, "Reset machine-id")
 	assertHasStep(t, steps, "Clean apk cache")
 	assertHasStep(t, steps, "Clear ash history")
+	assertHasStep(t, steps, "Fix bash login shells")
 	assertNoStep(t, steps, "Flush and vacuum journald") // No journald on Alpine.
 	assertNoStep(t, steps, "Clean apt cache")
+}
+
+func TestBuildProfile_AlpineFixBashShells(t *testing.T) {
+	steps := buildProfile(OSAlpine, Options{})
+	var found bool
+	for _, s := range steps {
+		if s.Name == "Fix bash login shells" {
+			// Command must only replace bash shells when bash is absent.
+			if !strings.Contains(s.Command, "command -v bash") {
+				t.Errorf("Fix bash login shells should check for bash presence, got: %s", s.Command)
+			}
+			if !strings.Contains(s.Command, "/bin/ash") {
+				t.Errorf("Fix bash login shells should replace with /bin/ash, got: %s", s.Command)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected Fix bash login shells step for Alpine")
+	}
 }
 
 func TestBuildProfile_AlpineDoasCleanup(t *testing.T) {

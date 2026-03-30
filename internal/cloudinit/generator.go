@@ -156,6 +156,13 @@ func Generate(cfg GeneratorConfig) ([]byte, error) {
 			"content":     profile.DoasConf,
 			"permissions": "0400",
 		})
+		if cfg.ExtraUser != nil {
+			writeFiles = append(writeFiles, map[string]any{
+				"path":        "/etc/doas.d/" + cfg.ExtraUser.Name + ".conf",
+				"content":     "permit nopass " + cfg.ExtraUser.Name + "\n",
+				"permissions": "0400",
+			})
+		}
 	}
 
 	// Ensure AllowAgentForwarding is active even on distros without sshd_config.d Include.

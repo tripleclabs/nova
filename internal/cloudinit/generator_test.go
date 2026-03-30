@@ -534,6 +534,48 @@ func TestGenerate_ExtraUserDefaultShell(t *testing.T) {
 	}
 }
 
+func TestGenerate_AlpineExtraUserGetsDoas(t *testing.T) {
+	out, err := Generate(GeneratorConfig{
+		Hostname:      "alpine-vm",
+		AuthorizedKey: "ssh-ed25519 AAAA...",
+		OS:            "alpine",
+		ExtraUser: &UserConfig{
+			Name:   "admin",
+			SSHKey: "ssh-ed25519 KEY...",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	s := string(out)
+	if !strings.Contains(s, "/etc/doas.d/admin.conf") {
+		t.Error("Alpine extra user should get a doas config in write_files")
+	}
+	if !strings.Contains(s, "permit nopass admin") {
+		t.Error("Alpine extra user doas config should grant nopass access")
+	}
+}
+
+func TestGenerate_NonAlpineExtraUserNoDoas(t *testing.T) {
+	out, err := Generate(GeneratorConfig{
+		Hostname:      "ubuntu-vm",
+		AuthorizedKey: "ssh-ed25519 AAAA...",
+		OS:            "ubuntu",
+		ExtraUser: &UserConfig{
+			Name:   "admin",
+			SSHKey: "ssh-ed25519 KEY...",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if strings.Contains(string(out), "doas.d/admin.conf") {
+		t.Error("non-Alpine extra user should not get a doas config")
+	}
+}
+
 func TestGenerateNetworkConfig_MultiNode(t *testing.T) {
 	cfg := GeneratorConfig{
 		StaticIP:   "10.0.0.2",
