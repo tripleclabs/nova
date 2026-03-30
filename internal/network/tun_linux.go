@@ -33,8 +33,28 @@ func openTAP(name, ip, cidr string) (*os.File, net.HardwareAddr, error) {
 	copy(req.Name[:], name)
 	req.Flags = unix.IFF_TAP | unix.IFF_NO_PI
 
-	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, f.Fd(),
-		unix.TUNSETIFF, uintptr(unsafe.Pointer(&req))); errno != 0 {
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, f.Fd(),
+		unix.TUNSETIFF, uintptr(unsafe.Pointer(&req)))
+	if errno == unix.EBUSY {
+		// A stale device from a previous daemon is still registered (e.g. two
+		// daemons started back-to-back before the first fully exited). Delete it
+		// and retry once.
+		f.Close()
+		if delErr := deleteInterface(name); delErr == nil {
+			f, err = os.OpenFile("/dev/net/tun", os.O_RDWR, 0)
+			if err != nil {
+				return nil, nil, fmt.Errorf("opening /dev/net/tun after cleanup: %w", err)
+			}
+			var req2 tunSetIFFReq
+			copy(req2.Name[:], name)
+			req2.Flags = unix.IFF_TAP | unix.IFF_NO_PI
+			_, _, errno = unix.Syscall(unix.SYS_IOCTL, f.Fd(),
+				unix.TUNSETIFF, uintptr(unsafe.Pointer(&req2)))
+		} else {
+			return nil, nil, fmt.Errorf("TUNSETIFF: device busy and cleanup failed: %w", delErr)
+		}
+	}
+	if errno != 0 {
 		f.Close()
 		return nil, nil, fmt.Errorf("TUNSETIFF: %w", errno)
 	}
@@ -106,6 +126,68 @@ func openTAP(name, ip, cidr string) (*os.File, net.HardwareAddr, error) {
 	}
 
 	return f, mac, nil
+}
+
+// deleteInterface removes a network interface by name using SIOCSIFFLAGS to
+// bring it down then SIOCGIFINDEX + RTM_DELLINK via netlink to delete it.
+// This is used to clean up a stale TAP device left by a previous daemon run.
+func deleteInterface(name string) error {
+	sock, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(sock)
+
+	// Bring the interface down first.
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
+		return err
+	}
+	_ = unix.IoctlIfreq(sock, unix.SIOCGIFFLAGS, ifr)
+	flags := ifr.Uint16() &^ uint16(unix.IFF_UP)
+	ifr.SetUint16(flags)
+	_ = unix.IoctlIfreq(sock, unix.SIOCSIFFLAGS, ifr)
+
+	// Delete via netlink RTM_DELLINK.
+	nlSock, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_ROUTE)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(nlSock)
+
+	ifrIdx, err := unix.NewIfreq(name)
+	if err != nil {
+		return err
+	}
+	nlSock2, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(nlSock2)
+	if err := unix.IoctlIfreq(nlSock2, unix.SIOCGIFINDEX, ifrIdx); err != nil {
+		return err
+	}
+	ifIndex := ifrIdx.Uint32()
+
+	// Build a minimal RTM_DELLINK message.
+	msg := unix.RtAttr{}
+	_ = msg
+	nlmsg := &unix.NlMsghdr{
+		Type:  unix.RTM_DELLINK,
+		Flags: unix.NLM_F_REQUEST | unix.NLM_F_ACK,
+		Seq:   1,
+	}
+	ifinfo := unix.IfInfomsg{Index: int32(ifIndex)}
+	nlmsgBytes := (*[unix.SizeofNlMsghdr]byte)(unsafe.Pointer(nlmsg))[:]
+	ifinfoBytes := (*[unix.SizeofIfInfomsg]byte)(unsafe.Pointer(&ifinfo))[:]
+	totalLen := unix.SizeofNlMsghdr + unix.SizeofIfInfomsg
+	nlmsg.Len = uint32(totalLen)
+	buf := make([]byte, totalLen)
+	copy(buf[:unix.SizeofNlMsghdr], nlmsgBytes)
+	copy(buf[unix.SizeofNlMsghdr:], ifinfoBytes)
+
+	sa := &unix.SockaddrNetlink{Family: unix.AF_NETLINK}
+	return unix.Sendto(nlSock, buf, 0, sa)
 }
 
 // ioctlIfreq issues an ioctl with the given ifreq on the socket fd.

@@ -94,7 +94,7 @@ func NewOrchestrator() (*Orchestrator, error) {
 
 // Up parses config and boots all nodes defined in it.
 // emit is called with (nodeName, message) for each progress event; pass nil to suppress output.
-func (o *Orchestrator) Up(ctx context.Context, cfgPath string, emit func(string, string)) error {
+func (o *Orchestrator) Up(ctx context.Context, cfgPath, configDir string, emit func(string, string)) error {
 	if emit == nil {
 		emit = func(string, string) {}
 	}
@@ -139,7 +139,7 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string, emit func(string,
 	}
 
 	for i, node := range nodes {
-		if err := o.upNode(ctx, cfgPath, node, hostsEntries, userDataPath, i, isMultiNode, subnet, emit); err != nil {
+		if err := o.upNode(ctx, cfgPath, configDir, node, hostsEntries, userDataPath, i, isMultiNode, subnet, emit); err != nil {
 			return fmt.Errorf("node %q: %w", node.Name, err)
 		}
 	}
@@ -150,6 +150,7 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath string, emit func(string,
 func (o *Orchestrator) upNode(
 	ctx context.Context,
 	cfgPath string,
+	configDir string,
 	node config.ResolvedNode,
 	hostsEntries []cloudinit.HostEntry,
 	userDataPath string,
@@ -160,6 +161,13 @@ func (o *Orchestrator) upNode(
 ) error {
 	machineID := node.Name
 
+	// Detect static IP conflicts with other running VMs before doing any work.
+	if node.IP != "" {
+		if err := o.checkIPConflict(machineID, node.IP); err != nil {
+			return err
+		}
+	}
+
 	// Check for an existing machine record.
 	if existing, err := o.store.Get(machineID); err == nil {
 		if existing.State == state.StateRunning {
@@ -168,7 +176,7 @@ func (o *Orchestrator) upNode(
 		// Stopped VM: restart it using the existing disk if present.
 		diskPath := existingDiskPath(o.store.MachineDir(machineID))
 		if diskPath != "" {
-			return o.restartNode(ctx, node, existing, diskPath, nodeIndex, isMultiNode, subnet, emit)
+			return o.restartNode(ctx, node, existing, diskPath, configDir, nodeIndex, isMultiNode, subnet, emit)
 		}
 		// No disk found (e.g. partial creation) — fall through to full creation.
 		o.store.Delete(machineID)
@@ -272,7 +280,7 @@ func (o *Orchestrator) upNode(
 			ciCfg.SwitchMAC = switchMAC // dual-NIC: NAT + switched
 		}
 	} else if o.sw != nil {
-		ciCfg.StaticIP = "10.0.0.2"
+		ciCfg.StaticIP = generateIP(machineID)
 		ciCfg.Subnet = "10.0.0.0/24"
 	}
 	// Inject extra user if configured.
@@ -351,9 +359,9 @@ func (o *Orchestrator) upNode(
 		}
 		vmCfg.Network.SwitchFile = switchFile
 		vmCfg.Network.SwitchMAC = switchMAC
-		// Single-VM gets a fixed IP; multi-node nodes already have node.IP set.
+		// Single-VM gets a deterministic IP; multi-node nodes already have node.IP set.
 		if !isMultiNode {
-			node.IP = "10.0.0.2"
+			node.IP = generateIP(machineID)
 			vmCfg.Network.StaticIP = node.IP
 		}
 	}
@@ -376,7 +384,7 @@ func (o *Orchestrator) upNode(
 	}
 
 	for _, sf := range node.SharedFolders {
-		hostPath, err := expandPath(sf.HostPath)
+		hostPath, err := expandPath(sf.HostPath, configDir)
 		if err != nil {
 			return fmt.Errorf("expanding shared folder path %q: %w", sf.HostPath, err)
 		}
@@ -440,7 +448,13 @@ func (o *Orchestrator) upNode(
 	sshEP := SSHEndpoint{Port: 22}
 	if o.sw != nil && runtime.GOOS == "linux" {
 		// Linux L2 switch: VM is directly reachable via nova0 TAP using its static IP.
-		sshEP.Host = node.IP
+		// For multi-node, use the config-assigned IP; for single-VM, use the
+		// deterministic hash-derived IP (same value used in cloud-init above).
+		if node.IP != "" {
+			sshEP.Host = node.IP
+		} else {
+			sshEP.Host = generateIP(machineID)
+		}
 		sshEP.Port = 22
 	} else if isMultiNode && runtime.GOOS == "linux" {
 		// Linux multi-node legacy: SSH through SLIRP port forward.
@@ -830,6 +844,7 @@ func (o *Orchestrator) restartNode(
 	node config.ResolvedNode,
 	machine *state.Machine,
 	diskPath string,
+	configDir string,
 	nodeIndex int,
 	isMultiNode bool,
 	subnet string,
@@ -887,7 +902,7 @@ func (o *Orchestrator) restartNode(
 		vmCfg.Network.SwitchFile = switchFile
 		vmCfg.Network.SwitchMAC = switchMAC
 		if !isMultiNode {
-			node.IP = "10.0.0.2"
+			node.IP = generateIP(machineID)
 			vmCfg.Network.StaticIP = node.IP
 		}
 	}
@@ -905,7 +920,7 @@ func (o *Orchestrator) restartNode(
 	}
 
 	for _, sf := range node.SharedFolders {
-		hostPath, err := expandPath(sf.HostPath)
+		hostPath, err := expandPath(sf.HostPath, configDir)
 		if err != nil {
 			return fmt.Errorf("expanding shared folder path %q: %w", sf.HostPath, err)
 		}
@@ -954,7 +969,11 @@ func (o *Orchestrator) restartNode(
 	// Rewrite SSH endpoint (port-forward ports may have shifted).
 	sshEP := SSHEndpoint{Port: 22}
 	if o.sw != nil && runtime.GOOS == "linux" {
-		sshEP.Host = node.IP
+		if node.IP != "" {
+			sshEP.Host = node.IP
+		} else {
+			sshEP.Host = generateIP(machineID)
+		}
 	} else if isMultiNode && runtime.GOOS == "linux" {
 		sshEP.Host = "127.0.0.1"
 		sshEP.Port = 2200 + nodeIndex
@@ -991,6 +1010,22 @@ func hashConfig(path string) string {
 // generateMAC derives a stable locally-administered MAC from a seed string.
 // Using SHA-256 ensures unique, reproducible addresses per machine/NIC without
 // storing them separately — the same seed always produces the same MAC.
+// generateIP derives a stable 10.0.0.x address from a seed string.
+// The host byte is drawn from the SHA-256 hash, clamped to [2, 254] so it
+// never collides with the gateway (.1) or broadcast (.255).
+func generateIP(seed string) string {
+	h := sha256.Sum256([]byte(seed))
+	// Use byte 3 of the hash, clamped to [2, 254].
+	host := int(h[3])
+	if host < 2 {
+		host = 2
+	}
+	if host > 254 {
+		host = 254
+	}
+	return fmt.Sprintf("10.0.0.%d", host)
+}
+
 func generateMAC(seed string) string {
 	h := sha256.Sum256([]byte(seed))
 	// Set locally administered bit (bit 1 of first octet), clear multicast bit (bit 0).
@@ -1005,6 +1040,33 @@ type SSHEndpoint struct {
 }
 
 // readSSHEndpoint loads the SSH endpoint for a machine, falling back to GuestIP:22.
+// checkIPConflict returns an error if any currently running VM (other than
+// the one being started) already owns the given static IP. Two VMs with the
+// same IP on the same L2 switch will silently clobber each other's SSH
+// connectivity, so we catch this early.
+func (o *Orchestrator) checkIPConflict(machineID, ip string) error {
+	machines, err := o.store.List()
+	if err != nil {
+		return err
+	}
+	for _, m := range machines {
+		if m.ID == machineID {
+			continue // Same machine being restarted — allowed.
+		}
+		if m.State != state.StateRunning {
+			continue
+		}
+		host, _, err := o.readSSHEndpoint(m.ID)
+		if err != nil {
+			continue
+		}
+		if host == ip {
+			return fmt.Errorf("static IP %s is already in use by running VM %q — choose a different IP in your nova.hcl", ip, m.Name)
+		}
+	}
+	return nil
+}
+
 func (o *Orchestrator) readSSHEndpoint(name string) (string, int, error) {
 	machineDir := o.store.MachineDir(name)
 	data, err := os.ReadFile(filepath.Join(machineDir, "ssh_endpoint.json"))
@@ -1047,15 +1109,26 @@ func (w *emitWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// expandPath expands a leading ~ to the current user's home directory
-// and resolves the result to an absolute path.
-func expandPath(p string) (string, error) {
+// expandPath expands a leading ~ to the current user's home directory and
+// resolves the result to an absolute path. Relative paths are resolved
+// against baseDir (the directory containing the nova.hcl that was loaded),
+// so "." refers to the project directory where the user ran "nova up" rather
+// than the daemon's working directory.
+func expandPath(p, baseDir string) (string, error) {
 	if strings.HasPrefix(p, "~/") || p == "~" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("resolving home directory: %w", err)
 		}
 		p = home + p[1:]
+		return filepath.Clean(p), nil
+	}
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p), nil
+	}
+	// Relative path: anchor to the nova.hcl's directory when available.
+	if baseDir != "" {
+		return filepath.Join(baseDir, p), nil
 	}
 	return filepath.Abs(p)
 }

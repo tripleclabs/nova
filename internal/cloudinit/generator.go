@@ -174,7 +174,7 @@ func Generate(cfg GeneratorConfig) ([]byte, error) {
 			}
 			opts := "rw,relatime"
 			if fsType == "9p" {
-				opts = "trans=virtio,version=9p2000.L,rw,relatime"
+				opts = "trans=virtio,version=9p2000.L,rw,relatime,cache=loose,msize=1048576"
 			}
 			// cloud-init mounts format: [device, mountpoint, type, options]
 			mounts = append(mounts, []any{m.Tag, m.GuestPath, fsType, opts})

@@ -396,7 +396,7 @@ func (e *qemuEngine) buildArgs() []string {
 	// Shared folders via virtio-9p (no external daemon required, unlike VirtioFS).
 	for i, share := range cfg.Shares {
 		fsdevID := fmt.Sprintf("fs%d", i)
-		fsdev := fmt.Sprintf("local,id=%s,path=%s,security_model=mapped-xattr", fsdevID, share.HostPath)
+		fsdev := fmt.Sprintf("local,id=%s,path=%s,security_model=none", fsdevID, share.HostPath)
 		if share.ReadOnly {
 			fsdev += ",readonly=on"
 		}

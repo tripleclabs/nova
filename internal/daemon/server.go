@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -152,13 +153,28 @@ func (s *Server) Apply(ctx context.Context, req *pb.ApplyRequest) (*pb.ApplyResp
 		})
 	}
 
-	if err := s.orch.Up(ctx, cfgPath, emit); err != nil {
+	// Extract client metadata: config directory for path resolution, and session
+	// ID so concurrent nova-up calls can distinguish their own apply_done event.
+	configDir := ""
+	sessionID := ""
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if vals := md.Get("nova-config-dir"); len(vals) > 0 {
+			configDir = vals[0]
+		}
+		if vals := md.Get("nova-session-id"); len(vals) > 0 {
+			sessionID = vals[0]
+		}
+	}
+
+	if err := s.orch.Up(ctx, cfgPath, configDir, emit); err != nil {
 		return nil, status.Errorf(codes.Internal, "apply: %v", err)
 	}
 
-	// Signal streaming clients that apply is complete so they can exit cleanly.
+	// Signal streaming clients that apply is complete. The session ID is echoed
+	// in Detail so concurrent nova-up calls can ignore each other's done signals.
 	s.events.publish(&pb.ClusterEvent{
 		Type:      "apply_done",
+		Detail:    sessionID,
 		Timestamp: timestamppb.Now(),
 	})
 
