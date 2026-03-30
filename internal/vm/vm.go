@@ -288,6 +288,7 @@ func (o *Orchestrator) upNode(
 		ciCfg.ExtraUser = &cloudinit.UserConfig{
 			Name:         node.User.Name,
 			SSHKey:       node.User.SSHKey,
+			Password:     node.User.Password,
 			PasswordHash: node.User.PasswordHash,
 			Groups:       node.User.Groups,
 			Shell:        node.User.Shell,

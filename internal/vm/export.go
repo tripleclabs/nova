@@ -220,8 +220,7 @@ func (o *Orchestrator) Export(ctx context.Context, name string, opts ExportOptio
 			sysprepOut = &lineEmitWriter{emit: opts.Emit}
 		}
 		if _, err := sysprep.Run(ctx, sshCfg, sysprepOpts, sysprepOut); err != nil {
-			emitf("Warning: %v", err)
-			emitf("Sysprep completed with errors. Proceeding with export.")
+			return nil, fmt.Errorf("sysprep failed: %w", err)
 		}
 
 		emitf("Shutting down ephemeral VM...")

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/tripleclabs/nova/internal/distro"
+	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
 
@@ -31,7 +32,8 @@ type HostEntry struct {
 type UserConfig struct {
 	Name         string
 	SSHKey       string
-	PasswordHash string
+	Password     string // plain text — hashed by Generate; enables console login
+	PasswordHash string // pre-hashed (sha512crypt $6$ or bcrypt $2b$)
 	Groups       []string
 	Shell        string
 }
@@ -92,7 +94,14 @@ func Generate(cfg GeneratorConfig) ([]byte, error) {
 		if cfg.ExtraUser.SSHKey != "" {
 			extraUser["ssh_authorized_keys"] = []any{cfg.ExtraUser.SSHKey}
 		}
-		if cfg.ExtraUser.PasswordHash != "" {
+		if cfg.ExtraUser.Password != "" {
+			hash, err := bcrypt.GenerateFromPassword([]byte(cfg.ExtraUser.Password), bcrypt.DefaultCost)
+			if err != nil {
+				return nil, fmt.Errorf("hashing password for user %q: %w", cfg.ExtraUser.Name, err)
+			}
+			extraUser["passwd"] = string(hash)
+			extraUser["lock_passwd"] = false
+		} else if cfg.ExtraUser.PasswordHash != "" {
 			extraUser["passwd"] = cfg.ExtraUser.PasswordHash
 			extraUser["lock_passwd"] = false
 		}

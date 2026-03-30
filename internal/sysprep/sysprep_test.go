@@ -182,6 +182,22 @@ func TestBuildProfile_UbuntuNetworkCleanup(t *testing.T) {
 	}
 }
 
+func TestBuildProfile_SudoersRemovedLast(t *testing.T) {
+	// Removing the sudoers/doas config revokes privilege escalation for the nova
+	// user. It must be the very last step — anything after it that needs doas/sudo
+	// will fail with permission denied.
+	for _, family := range []OSFamily{OSUbuntu, OSDebian, OSAlpine, OSFedora, OSGeneric} {
+		steps := buildProfile(family, Options{RemoveNovaUser: true, ZeroFreeSpace: true, TargetHyperV: true})
+		if len(steps) == 0 {
+			t.Fatalf("%s: no steps", family)
+		}
+		last := steps[len(steps)-1]
+		if last.Name != "Remove Nova sudoers/doas config" {
+			t.Errorf("%s: last step = %q, want \"Remove Nova sudoers/doas config\"", family, last.Name)
+		}
+	}
+}
+
 func TestBuildProfile_UniversalStepsFirst(t *testing.T) {
 	steps := buildProfile(OSUbuntu, Options{})
 	// Universal steps (SSH keys, Nova keys, sudoers, tmp) should come before OS-specific.
@@ -204,6 +220,7 @@ func TestBuildProfile_UbuntuHyperV(t *testing.T) {
 	steps := buildProfile(OSUbuntu, Options{TargetHyperV: true})
 	assertHasStep(t, steps, "Inject Hyper-V drivers into initramfs")
 	assertHasStep(t, steps, "Update GRUB for Hyper-V")
+	assertHasStep(t, steps, "Install Hyper-V guest tools")
 	for _, s := range steps {
 		if strings.Contains(s.Name, "Inject Hyper-V") {
 			if strings.Contains(s.Command, "hv_blkvsc") {
@@ -220,6 +237,7 @@ func TestBuildProfile_FedoraHyperV(t *testing.T) {
 	steps := buildProfile(OSFedora, Options{TargetHyperV: true})
 	assertHasStep(t, steps, "Inject Hyper-V drivers into initramfs")
 	assertHasStep(t, steps, "Update GRUB for Hyper-V")
+	assertHasStep(t, steps, "Install Hyper-V guest tools")
 	for _, s := range steps {
 		if strings.Contains(s.Name, "Inject Hyper-V") {
 			if strings.Contains(s.Command, "hv_blkvsc") {
@@ -235,6 +253,7 @@ func TestBuildProfile_FedoraHyperV(t *testing.T) {
 func TestBuildProfile_AlpineHyperV(t *testing.T) {
 	steps := buildProfile(OSAlpine, Options{TargetHyperV: true})
 	assertHasStep(t, steps, "Inject Hyper-V drivers into initramfs")
+	assertHasStep(t, steps, "Install Hyper-V guest tools")
 	for _, s := range steps {
 		if strings.Contains(s.Name, "Inject Hyper-V") {
 			if !strings.Contains(s.Command, "mkinitfs") {
@@ -257,6 +276,7 @@ func TestBuildProfile_NoHyperVStepsByDefault(t *testing.T) {
 		steps := buildProfile(family, Options{})
 		assertNoStep(t, steps, "Inject Hyper-V")
 		assertNoStep(t, steps, "Update GRUB for Hyper-V")
+		assertNoStep(t, steps, "Install Hyper-V guest tools")
 	}
 }
 

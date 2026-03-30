@@ -63,11 +63,12 @@ type Provisioner struct {
 }
 
 // User describes a non-Nova user to be created in the VM.
-// At least one of SSHKey or PasswordHash must be provided.
+// At least one of SSHKey, Password, or PasswordHash must be provided.
 type User struct {
 	Name         string   `hcl:"name"`
 	SSHKey       string   `hcl:"ssh_key,optional"`
-	PasswordHash string   `hcl:"password_hash,optional"`
+	Password     string   `hcl:"password,optional"`      // plain text — Nova hashes it; enables console login
+	PasswordHash string   `hcl:"password_hash,optional"` // pre-hashed (sha512crypt $6$ or bcrypt $2b$)
 	Groups       []string `hcl:"groups,optional"`
 	Shell        string   `hcl:"shell,optional"`
 }

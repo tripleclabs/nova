@@ -153,77 +153,89 @@ func ParseOSRelease(content string) OSFamily {
 	return OSGeneric
 }
 
+// priv returns the privilege escalation command for the given OS family.
+// Alpine ships doas (not sudo) as its privilege escalation tool.
+func priv(family OSFamily) string {
+	if family == OSAlpine {
+		return "doas"
+	}
+	return "sudo"
+}
+
 // buildProfile returns the ordered list of sysprep steps for an OS family.
 func buildProfile(family OSFamily, opts Options) []Step {
 	var steps []Step
+	p := priv(family)
 
 	// --- Universal steps ---
+	// NOTE: removeSudoersCommand is intentionally NOT here — it must run last
+	// because it revokes the nova user's privilege escalation (doas/sudo).
+	// Any step after it that needs doas/sudo will fail with permission denied.
 	steps = append(steps,
-		Step{"Remove SSH host keys", "sudo rm -f /etc/ssh/ssh_host_*"},
-		Step{"Remove Nova authorized keys", "sudo rm -f /home/nova/.ssh/authorized_keys /root/.ssh/authorized_keys"},
-		Step{"Remove Nova sudoers/doas config", removeSudoersCommand(family)},
-		Step{"Clear temp directories", "sudo rm -rf /tmp/* /var/tmp/*"},
+		Step{"Remove SSH host keys", p + " rm -f /etc/ssh/ssh_host_*"},
+		Step{"Remove Nova authorized keys", p + " rm -f /home/nova/.ssh/authorized_keys /root/.ssh/authorized_keys"},
+		Step{"Clear temp directories", p + " rm -rf /tmp/* /var/tmp/*"},
 		// Remove Nova multi-node networking artifacts.
 		Step{"Remove Nova network config", removeNovaNetworkCommand(family)},
-		Step{"Remove cloud-init NoCloud seed", "sudo rm -rf /var/lib/cloud/seed/nocloud* 2>/dev/null || true"},
-		Step{"Remove Nova /etc/hosts entries", "sudo sed -i '/# nova-managed/d' /etc/hosts 2>/dev/null || true"},
-		Step{"Flush ARP cache", "sudo ip neigh flush all 2>/dev/null || true"},
+		Step{"Remove cloud-init NoCloud seed", p + " rm -rf /var/lib/cloud/seed/nocloud* 2>/dev/null || true"},
+		Step{"Remove Nova /etc/hosts entries", p + " sed -i '/# nova-managed/d' /etc/hosts 2>/dev/null || true"},
+		Step{"Flush ARP cache", p + " ip neigh flush all 2>/dev/null || true"},
 		// Remove nova shared-folder mounts (9p / virtiofs) from fstab — these
 		// are nova-specific and will not exist on the target hypervisor.
-		Step{"Remove shared-folder fstab entries", "sudo sed -i -E '/[[:space:]]+(9p|virtiofs)[[:space:]]/d' /etc/fstab 2>/dev/null || true"},
+		Step{"Remove shared-folder fstab entries", p + " sed -i -E '/[[:space:]]+(9p|virtiofs)[[:space:]]/d' /etc/fstab 2>/dev/null || true"},
 	)
 
 	// --- OS-specific steps ---
 	switch family {
 	case OSUbuntu, OSDebian:
 		steps = append(steps,
-			Step{"Truncate machine-id", "sudo truncate -s 0 /etc/machine-id"},
-			Step{"Remove D-Bus machine-id symlink", "sudo rm -f /var/lib/dbus/machine-id"},
-			Step{"Reset cloud-init", "sudo cloud-init clean --logs 2>/dev/null || true"},
-			Step{"Clean apt cache", "sudo apt-get clean && sudo rm -rf /var/lib/apt/lists/*"},
-			Step{"Flush and vacuum journald", "sudo journalctl --flush --rotate --vacuum-time=1s 2>/dev/null || true"},
-			Step{"Truncate log files", "sudo find /var/log -type f -exec truncate -s 0 {} \\;"},
-			Step{"Remove netplan generated configs", "sudo rm -f /etc/netplan/50-cloud-init.yaml /etc/netplan/90-nova-static.yaml 2>/dev/null || true"},
-			Step{"Remove DHCP leases", "sudo rm -f /var/lib/dhcp/* /var/lib/NetworkManager/*.lease 2>/dev/null || true"},
-			Step{"Remove udev persistent rules", "sudo rm -f /etc/udev/rules.d/70-persistent-* 2>/dev/null || true"},
-			Step{"Clear bash history", "sudo find /home /root -maxdepth 2 -name '.bash_history' -delete 2>/dev/null || true"},
+			Step{"Truncate machine-id", p + " truncate -s 0 /etc/machine-id"},
+			Step{"Remove D-Bus machine-id symlink", p + " rm -f /var/lib/dbus/machine-id"},
+			Step{"Reset cloud-init", p + " cloud-init clean --logs 2>/dev/null || true"},
+			Step{"Clean apt cache", p + " apt-get clean && " + p + " rm -rf /var/lib/apt/lists/*"},
+			Step{"Flush and vacuum journald", p + " journalctl --flush --rotate --vacuum-time=1s 2>/dev/null || true"},
+			Step{"Truncate log files", p + " find /var/log -type f -exec truncate -s 0 {} \\;"},
+			Step{"Remove netplan generated configs", p + " rm -f /etc/netplan/50-cloud-init.yaml /etc/netplan/90-nova-static.yaml 2>/dev/null || true"},
+			Step{"Remove DHCP leases", p + " rm -f /var/lib/dhcp/* /var/lib/NetworkManager/*.lease 2>/dev/null || true"},
+			Step{"Remove udev persistent rules", p + " rm -f /etc/udev/rules.d/70-persistent-* 2>/dev/null || true"},
+			Step{"Clear bash history", p + " find /home /root -maxdepth 2 -name '.bash_history' -delete 2>/dev/null || true"},
 		)
 
 	case OSAlpine:
 		steps = append(steps,
 			// Alpine doesn't use systemd — write a sentinel so the init system regenerates.
-			Step{"Reset machine-id", "echo 'uninitialized' | sudo tee /etc/machine-id > /dev/null"},
-			Step{"Remove D-Bus machine-id", "sudo rm -f /var/lib/dbus/machine-id 2>/dev/null || true"},
-			Step{"Reset cloud-init", "sudo cloud-init clean --logs 2>/dev/null || true"},
-			Step{"Clean apk cache", "sudo rm -rf /var/cache/apk/*"},
-			Step{"Truncate log files", "sudo find /var/log -type f -exec truncate -s 0 {} \\;"},
-			Step{"Remove DHCP leases", "sudo rm -f /var/lib/dhcpcd/* /var/lib/udhcpc/* 2>/dev/null || true"},
-			Step{"Remove udev persistent rules", "sudo rm -f /etc/udev/rules.d/70-persistent-* 2>/dev/null || true"},
-			Step{"Clear ash history", "sudo find /home /root -maxdepth 2 -name '.ash_history' -delete 2>/dev/null || true"},
+			Step{"Reset machine-id", "echo 'uninitialized' | " + p + " tee /etc/machine-id > /dev/null"},
+			Step{"Remove D-Bus machine-id", p + " rm -f /var/lib/dbus/machine-id 2>/dev/null || true"},
+			Step{"Reset cloud-init", p + " cloud-init clean --logs 2>/dev/null || true"},
+			Step{"Clean apk cache", p + " rm -rf /var/cache/apk/*"},
+			Step{"Truncate log files", p + " find /var/log -type f -exec truncate -s 0 {} \\;"},
+			Step{"Remove DHCP leases", p + " rm -f /var/lib/dhcpcd/* /var/lib/udhcpc/* 2>/dev/null || true"},
+			Step{"Remove udev persistent rules", p + " rm -f /etc/udev/rules.d/70-persistent-* 2>/dev/null || true"},
+			Step{"Clear ash history", p + " find /home /root -maxdepth 2 -name '.ash_history' -delete 2>/dev/null || true"},
 		)
 
 	case OSFedora:
 		steps = append(steps,
-			Step{"Truncate machine-id", "sudo truncate -s 0 /etc/machine-id"},
-			Step{"Remove D-Bus machine-id", "sudo rm -f /var/lib/dbus/machine-id 2>/dev/null || true"},
-			Step{"Reset cloud-init", "sudo cloud-init clean --logs 2>/dev/null || true"},
-			Step{"Clean dnf cache", "sudo dnf clean all 2>/dev/null || true"},
-			Step{"Flush and vacuum journald", "sudo journalctl --flush --rotate --vacuum-time=1s 2>/dev/null || true"},
-			Step{"Truncate log files", "sudo find /var/log -type f -exec truncate -s 0 {} \\;"},
-			Step{"Remove DHCP leases", "sudo rm -f /var/lib/dhcp/* /var/lib/NetworkManager/*.lease 2>/dev/null || true"},
-			Step{"Remove udev persistent rules", "sudo rm -f /etc/udev/rules.d/70-persistent-* 2>/dev/null || true"},
-			Step{"Clear bash history", "sudo find /home /root -maxdepth 2 -name '.bash_history' -delete 2>/dev/null || true"},
+			Step{"Truncate machine-id", p + " truncate -s 0 /etc/machine-id"},
+			Step{"Remove D-Bus machine-id", p + " rm -f /var/lib/dbus/machine-id 2>/dev/null || true"},
+			Step{"Reset cloud-init", p + " cloud-init clean --logs 2>/dev/null || true"},
+			Step{"Clean dnf cache", p + " dnf clean all 2>/dev/null || true"},
+			Step{"Flush and vacuum journald", p + " journalctl --flush --rotate --vacuum-time=1s 2>/dev/null || true"},
+			Step{"Truncate log files", p + " find /var/log -type f -exec truncate -s 0 {} \\;"},
+			Step{"Remove DHCP leases", p + " rm -f /var/lib/dhcp/* /var/lib/NetworkManager/*.lease 2>/dev/null || true"},
+			Step{"Remove udev persistent rules", p + " rm -f /etc/udev/rules.d/70-persistent-* 2>/dev/null || true"},
+			Step{"Clear bash history", p + " find /home /root -maxdepth 2 -name '.bash_history' -delete 2>/dev/null || true"},
 		)
 
 	default: // OSGeneric
 		steps = append(steps,
-			Step{"Truncate machine-id", "sudo truncate -s 0 /etc/machine-id"},
-			Step{"Remove D-Bus machine-id", "sudo rm -f /var/lib/dbus/machine-id 2>/dev/null || true"},
-			Step{"Reset cloud-init (if present)", "command -v cloud-init >/dev/null 2>&1 && sudo cloud-init clean --logs || echo 'cloud-init not found, skipping'"},
-			Step{"Truncate log files", "sudo find /var/log -type f -exec truncate -s 0 {} \\;"},
-			Step{"Remove DHCP leases (common paths)", "sudo rm -f /var/lib/dhcp/* /var/lib/dhcpcd/* /var/lib/NetworkManager/*.lease 2>/dev/null || true"},
-			Step{"Remove udev persistent rules", "sudo rm -f /etc/udev/rules.d/70-persistent-* 2>/dev/null || true"},
-			Step{"Clear shell history", "sudo find /home /root -maxdepth 2 \\( -name '.bash_history' -o -name '.ash_history' \\) -delete 2>/dev/null || true"},
+			Step{"Truncate machine-id", p + " truncate -s 0 /etc/machine-id"},
+			Step{"Remove D-Bus machine-id", p + " rm -f /var/lib/dbus/machine-id 2>/dev/null || true"},
+			Step{"Reset cloud-init (if present)", "command -v cloud-init >/dev/null 2>&1 && " + p + " cloud-init clean --logs || echo 'cloud-init not found, skipping'"},
+			Step{"Truncate log files", p + " find /var/log -type f -exec truncate -s 0 {} \\;"},
+			Step{"Remove DHCP leases (common paths)", p + " rm -f /var/lib/dhcp/* /var/lib/dhcpcd/* /var/lib/NetworkManager/*.lease 2>/dev/null || true"},
+			Step{"Remove udev persistent rules", p + " rm -f /etc/udev/rules.d/70-persistent-* 2>/dev/null || true"},
+			Step{"Clear shell history", p + " find /home /root -maxdepth 2 \\( -name '.bash_history' -o -name '.ash_history' \\) -delete 2>/dev/null || true"},
 		)
 	}
 
@@ -238,16 +250,24 @@ func buildProfile(family OSFamily, opts Options) []Step {
 		case OSUbuntu, OSDebian:
 			steps = append(steps,
 				Step{"Inject Hyper-V drivers into initramfs",
-					"printf 'hv_vmbus\\nhv_storvsc\\nhv_netvsc\\n' | sudo tee -a /etc/initramfs-tools/modules > /dev/null && sudo update-initramfs -u"},
+					"printf 'hv_vmbus\\nhv_storvsc\\nhv_netvsc\\n' | " + p + " tee -a /etc/initramfs-tools/modules > /dev/null && " + p + " update-initramfs -u"},
 				Step{"Update GRUB for Hyper-V",
-					"sudo update-grub 2>/dev/null || true"},
+					p + " update-grub"},
+				// hyperv-daemons provides hv_kvp_daemon which lets Hyper-V report
+				// the guest IP address in Hyper-V Manager and via PowerShell.
+				Step{"Install Hyper-V guest tools",
+					p + " apt-get update && " + p + " apt-get install -y hyperv-daemons"},
 			)
 		case OSFedora:
 			steps = append(steps,
 				Step{"Inject Hyper-V drivers into initramfs",
-					"sudo dracut --add-drivers 'hv_vmbus hv_storvsc hv_netvsc' --force"},
+					p + " dracut --add-drivers 'hv_vmbus hv_storvsc hv_netvsc' --force"},
+				// grub2-mkconfig is the Fedora name; grub-mkconfig is the fallback for
+				// distros that use the unversioned name. One of the two must succeed.
 				Step{"Update GRUB for Hyper-V",
-					"sudo grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || sudo grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || true"},
+					p + " grub2-mkconfig -o /boot/grub2/grub.cfg || " + p + " grub-mkconfig -o /boot/grub/grub.cfg"},
+				Step{"Install Hyper-V guest tools",
+					p + " dnf install -y hyperv-daemons && " + p + " systemctl enable hypervkvpd hypervvssd"},
 			)
 		case OSAlpine:
 			// Alpine uses mkinitfs instead of dracut/update-initramfs.
@@ -255,9 +275,12 @@ func buildProfile(family OSFamily, opts Options) []Step {
 			// enable the feature in mkinitfs.conf, then rebuild the initramfs.
 			steps = append(steps,
 				Step{"Inject Hyper-V drivers into initramfs",
-					"printf 'kernel/drivers/hv/*\\nkernel/drivers/scsi/hv_storvsc*\\nkernel/drivers/net/hyperv/*\\n' | sudo tee /etc/mkinitfs/features.d/hyperv.modules > /dev/null && " +
-						"grep -q hyperv /etc/mkinitfs/mkinitfs.conf || sudo sed -i 's/features=\"\\(.*\\)\"/features=\"\\1 hyperv\"/' /etc/mkinitfs/mkinitfs.conf && " +
-						"sudo mkinitfs $(uname -r)"},
+					"printf 'kernel/drivers/hv/*\\nkernel/drivers/scsi/hv_storvsc*\\nkernel/drivers/net/hyperv/*\\n' | " + p + " tee /etc/mkinitfs/features.d/hyperv.modules > /dev/null && " +
+						"(grep -q hyperv /etc/mkinitfs/mkinitfs.conf || " + p + " sed -i 's/features=\"\\(.*\\)\"/features=\"\\1 hyperv\"/' /etc/mkinitfs/mkinitfs.conf) && " +
+						p + " mkinitfs $(uname -r)"},
+				// hvtools (hv_kvp_daemon) is in the community repo — enable it before installing.
+				Step{"Install Hyper-V guest tools",
+					p + " sed -i 's|^#\\(.*community\\)|\\1|' /etc/apk/repositories && " + p + " apk update && " + p + " apk add --no-cache hvtools && " + p + " rc-update add hv_kvp_daemon default"},
 			)
 		}
 	}
@@ -265,36 +288,42 @@ func buildProfile(family OSFamily, opts Options) []Step {
 	// --- Optional: remove nova user ---
 	if opts.RemoveNovaUser {
 		// Use userdel on systemd distros, deluser on Alpine.
-		rmCmd := "sudo userdel -r nova 2>/dev/null || sudo deluser --remove-home nova 2>/dev/null || true"
+		rmCmd := p + " userdel -r nova 2>/dev/null || " + p + " deluser --remove-home nova 2>/dev/null || true"
 		steps = append(steps, Step{"Remove internal nova user", rmCmd})
 	}
 
 	// --- Optional: zero free space ---
 	if opts.ZeroFreeSpace {
 		steps = append(steps,
-			Step{"Zero free space (this may take a while)", "sudo dd if=/dev/zero of=/tmp/zero.fill bs=1M 2>/dev/null; sudo rm -f /tmp/zero.fill; sudo sync"},
+			Step{"Zero free space (this may take a while)", p + " dd if=/dev/zero of=/tmp/zero.fill bs=1M 2>/dev/null; " + p + " rm -f /tmp/zero.fill; " + p + " sync"},
 		)
 	}
+
+	// Revoke nova's privilege escalation last — any step after this that
+	// needs doas/sudo will fail, so nothing should follow this step.
+	steps = append(steps, Step{"Remove Nova sudoers/doas config", removeSudoersCommand(family)})
 
 	return steps
 }
 
 func removeNovaNetworkCommand(family OSFamily) string {
+	p := priv(family)
 	switch family {
 	case OSAlpine:
-		return "sudo rm -f /etc/network/interfaces.d/nova-* 2>/dev/null || true"
+		return p + " rm -f /etc/network/interfaces.d/nova-* 2>/dev/null || true"
 	default:
 		// Ubuntu/Debian/Fedora: remove Nova-generated netplan configs.
-		return "sudo rm -f /etc/netplan/90-nova-static.yaml 2>/dev/null || true"
+		return p + " rm -f /etc/netplan/90-nova-static.yaml 2>/dev/null || true"
 	}
 }
 
 func removeSudoersCommand(family OSFamily) string {
+	p := priv(family)
 	switch family {
 	case OSAlpine:
-		return "sudo rm -f /etc/doas.d/nova.conf /etc/sudoers.d/nova 2>/dev/null || true"
+		return p + " rm -f /etc/doas.d/nova.conf /etc/sudoers.d/nova 2>/dev/null || true"
 	default:
-		return "sudo rm -f /etc/sudoers.d/nova 2>/dev/null || true"
+		return p + " rm -f /etc/sudoers.d/nova 2>/dev/null || true"
 	}
 }
 
