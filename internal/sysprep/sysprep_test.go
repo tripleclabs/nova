@@ -200,6 +200,66 @@ func TestBuildProfile_Fedora(t *testing.T) {
 	assertNoStep(t, steps, "Clean apt cache")
 }
 
+func TestBuildProfile_UbuntuHyperV(t *testing.T) {
+	steps := buildProfile(OSUbuntu, Options{TargetHyperV: true})
+	assertHasStep(t, steps, "Inject Hyper-V drivers into initramfs")
+	assertHasStep(t, steps, "Update GRUB for Hyper-V")
+	for _, s := range steps {
+		if strings.Contains(s.Name, "Inject Hyper-V") {
+			if strings.Contains(s.Command, "hv_blkvsc") {
+				t.Errorf("hv_blkvsc is deprecated and must not be injected, got: %s", s.Command)
+			}
+			if !strings.Contains(s.Command, "update-initramfs") {
+				t.Errorf("Ubuntu HyperV step should use update-initramfs, got: %s", s.Command)
+			}
+		}
+	}
+}
+
+func TestBuildProfile_FedoraHyperV(t *testing.T) {
+	steps := buildProfile(OSFedora, Options{TargetHyperV: true})
+	assertHasStep(t, steps, "Inject Hyper-V drivers into initramfs")
+	assertHasStep(t, steps, "Update GRUB for Hyper-V")
+	for _, s := range steps {
+		if strings.Contains(s.Name, "Inject Hyper-V") {
+			if strings.Contains(s.Command, "hv_blkvsc") {
+				t.Errorf("hv_blkvsc is deprecated and must not be injected, got: %s", s.Command)
+			}
+			if !strings.Contains(s.Command, "dracut") {
+				t.Errorf("Fedora HyperV step should use dracut, got: %s", s.Command)
+			}
+		}
+	}
+}
+
+func TestBuildProfile_AlpineHyperV(t *testing.T) {
+	steps := buildProfile(OSAlpine, Options{TargetHyperV: true})
+	assertHasStep(t, steps, "Inject Hyper-V drivers into initramfs")
+	for _, s := range steps {
+		if strings.Contains(s.Name, "Inject Hyper-V") {
+			if !strings.Contains(s.Command, "mkinitfs") {
+				t.Errorf("Alpine HyperV step should use mkinitfs, got: %s", s.Command)
+			}
+			if strings.Contains(s.Command, "update-initramfs") {
+				t.Errorf("Alpine HyperV step must not use update-initramfs, got: %s", s.Command)
+			}
+			if strings.Contains(s.Command, "dracut") {
+				t.Errorf("Alpine HyperV step must not use dracut, got: %s", s.Command)
+			}
+		}
+	}
+	// Alpine has no GRUB — no GRUB update step expected.
+	assertNoStep(t, steps, "Update GRUB for Hyper-V")
+}
+
+func TestBuildProfile_NoHyperVStepsByDefault(t *testing.T) {
+	for _, family := range []OSFamily{OSUbuntu, OSDebian, OSAlpine, OSFedora, OSGeneric} {
+		steps := buildProfile(family, Options{})
+		assertNoStep(t, steps, "Inject Hyper-V")
+		assertNoStep(t, steps, "Update GRUB for Hyper-V")
+	}
+}
+
 func assertHasStep(t *testing.T, steps []Step, name string) {
 	t.Helper()
 	for _, s := range steps {

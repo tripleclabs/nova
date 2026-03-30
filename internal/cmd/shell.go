@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	pb "github.com/tripleclabs/nova/pkg/novapb/nova/v1"
@@ -90,11 +89,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("SSH key not found at %s", keyPath)
 	}
 
-	// Use configured user if present, otherwise default to "nova".
 	sshUser := "nova"
-	if data, err := os.ReadFile(filepath.Join(machineDir, "shell_user")); err == nil {
-		sshUser = strings.TrimSpace(string(data))
-	}
 
 	// Read SSH endpoint — may differ from guest IP for Linux multi-node.
 	sshHost := guestIP

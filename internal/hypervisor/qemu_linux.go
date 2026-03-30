@@ -52,6 +52,11 @@ func (e *qemuEngine) Start(ctx context.Context, cfg VMConfig) error {
 
 	e.qmpSock = filepath.Join(cfg.MachineDir, "qmp.sock")
 
+	if err := setupOVMFVars(cfg); err != nil {
+		e.state = StateError
+		return err
+	}
+
 	args := e.buildArgs()
 	slog.Debug("starting QEMU", "binary", binary, "args", args)
 
@@ -338,6 +343,16 @@ func (e *qemuEngine) buildArgs() []string {
 		"-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio", cfg.DiskPath),
 	}
 
+	// UEFI firmware: unit 0 = read-only code image, unit 1 = per-VM writable vars.
+	// setupOVMFVars (called before buildArgs) has already validated the paths.
+	if code, _, err := ovmfPaths(normalizeArch(cfg.Arch)); err == nil {
+		varsPath := filepath.Join(cfg.MachineDir, "ovmf_vars.fd")
+		args = append(args,
+			"-drive", fmt.Sprintf("if=pflash,format=raw,unit=0,readonly=on,file=%s", code),
+			"-drive", fmt.Sprintf("if=pflash,format=raw,unit=1,file=%s", varsPath),
+		)
+	}
+
 	// Cloud-init CIDATA ISO (optional).
 	if cfg.CIDATAPath != "" {
 		args = append(args, "-drive",
@@ -484,6 +499,64 @@ func (e *qemuEngine) watchAttachedProcess() {
 			return
 		}
 	}
+}
+
+// ovmfPaths returns the host paths for the OVMF firmware code image and the
+// writable vars template for the given guest architecture.
+// Returns an error if the firmware package is not installed.
+func ovmfPaths(arch string) (code, varsTmpl string, err error) {
+	type pair struct{ code, vars string }
+	var candidates []pair
+	switch normalizeArch(arch) {
+	case "arm64":
+		candidates = []pair{
+			{"/usr/share/AAVMF/AAVMF_CODE.fd", "/usr/share/AAVMF/AAVMF_VARS.fd"},
+			{"/usr/share/edk2/aarch64/QEMU_EFI.fd", "/usr/share/edk2/aarch64/vars-template-pflash.raw"},
+		}
+	default: // amd64
+		candidates = []pair{
+			{"/usr/share/OVMF/OVMF_CODE.fd", "/usr/share/OVMF/OVMF_VARS.fd"},
+			{"/usr/share/edk2/x64/OVMF_CODE.fd", "/usr/share/edk2/x64/OVMF_VARS.fd"},
+			{"/usr/share/edk2-ovmf/x64/OVMF_CODE.fd", "/usr/share/edk2-ovmf/x64/OVMF_VARS.fd"},
+		}
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c.code); err == nil {
+			if _, err := os.Stat(c.vars); err == nil {
+				return c.code, c.vars, nil
+			}
+			return c.code, "", nil // code found; no vars template, will create blank
+		}
+	}
+	pkg := "ovmf"
+	if normalizeArch(arch) == "arm64" {
+		pkg = "qemu-efi-aarch64"
+	}
+	return "", "", fmt.Errorf("UEFI firmware not found — install %s (Debian/Ubuntu) or edk2-ovmf (Fedora)", pkg)
+}
+
+// setupOVMFVars ensures a per-VM writable OVMF variable store exists in
+// cfg.MachineDir. On first boot it is copied from the system template; on
+// subsequent boots the existing file (which may contain saved UEFI state) is
+// left untouched.
+func setupOVMFVars(cfg VMConfig) error {
+	varsPath := filepath.Join(cfg.MachineDir, "ovmf_vars.fd")
+	if _, err := os.Stat(varsPath); err == nil {
+		return nil // already present from a previous boot
+	}
+	_, varsTmpl, err := ovmfPaths(cfg.Arch)
+	if err != nil {
+		return err
+	}
+	if varsTmpl == "" {
+		// No template on this host — create a blank 64 KiB pflash image.
+		return os.WriteFile(varsPath, make([]byte, 64*1024), 0644)
+	}
+	data, err := os.ReadFile(varsTmpl)
+	if err != nil {
+		return fmt.Errorf("reading OVMF vars template %s: %w", varsTmpl, err)
+	}
+	return os.WriteFile(varsPath, data, 0644)
 }
 
 // qemuBinary resolves the qemu-system binary for the current architecture.

@@ -1044,6 +1044,81 @@ type SSHEndpoint struct {
 // the one being started) already owns the given static IP. Two VMs with the
 // same IP on the same L2 switch will silently clobber each other's SSH
 // connectivity, so we catch this early.
+// startExportVM boots an ephemeral QEMU instance from diskPath for use during
+// export sysprep. The caller must call ForceKill on the returned Hypervisor when done.
+// Returns (hypervisor, sshHost, sshPort, error).
+func (o *Orchestrator) startExportVM(ctx context.Context, name, diskPath, machineDir string, cpus uint, memMB uint64) (hypervisor.Hypervisor, string, string, error) {
+	if cpus == 0 {
+		cpus = 2
+	}
+	if memMB == 0 {
+		memMB = 2048
+	}
+
+	mac := generateMAC(name)
+
+	vmCfg := hypervisor.VMConfig{
+		Name:       name,
+		CPUs:       cpus,
+		MemoryMB:   memMB,
+		DiskPath:   diskPath,
+		LogPath:    filepath.Join(machineDir, "export-console.log"),
+		MachineDir: machineDir,
+		PIDPath:    filepath.Join(machineDir, "export-hypervisor.pid"),
+	}
+	vmCfg.Network.MACAddress = mac
+
+	var sshHost, sshPort string
+
+	if o.sw != nil && runtime.GOOS == "linux" {
+		// L2 switch: ephemeral VM gets the same deterministic IP as the original.
+		switchFile, err := o.sw.NewPort(name)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("allocating switch port for export VM: %w", err)
+		}
+		vmCfg.Network.SwitchFile = switchFile
+		vmCfg.Network.StaticIP = generateIP(name)
+		sshHost = generateIP(name)
+		sshPort = "22"
+	} else {
+		// SLIRP fallback: pick a free host port and forward it to guest:22.
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, "", "", fmt.Errorf("finding free port for export VM SSH: %w", err)
+		}
+		freePort := ln.Addr().(*net.TCPAddr).Port
+		ln.Close()
+		vmCfg.Network.PortForwards = []hypervisor.PortForward{
+			{HostPort: freePort, GuestPort: 22, Protocol: "tcp"},
+		}
+		sshHost = "127.0.0.1"
+		sshPort = fmt.Sprintf("%d", freePort)
+	}
+
+	// Re-use the original cidata.iso from the machine directory.
+	// Cloud-init on the clone sees the same instance-id it already processed and
+	// skips all modules — no users are recreated, no runcmd runs, nothing is
+	// modified. The network comes up because the networking init service reads
+	// /etc/network/interfaces (or netplan configs) that were written during the
+	// original cloud-init run and are already present on the clone disk.
+	if existingCidata := filepath.Join(machineDir, "cidata.iso"); fileExists(existingCidata) {
+		vmCfg.CIDATAPath = existingCidata
+	}
+
+	hv, err := hypervisor.New()
+	if err != nil {
+		return nil, "", "", err
+	}
+	if err := hv.Start(ctx, vmCfg); err != nil {
+		return nil, "", "", fmt.Errorf("starting export VM: %w", err)
+	}
+	if vmCfg.Network.SwitchFile != nil {
+		vmCfg.Network.SwitchFile.Close()
+	}
+
+	return hv, sshHost, sshPort, nil
+}
+
 func (o *Orchestrator) checkIPConflict(machineID, ip string) error {
 	machines, err := o.store.List()
 	if err != nil {

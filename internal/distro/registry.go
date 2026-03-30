@@ -46,7 +46,7 @@ var registry = map[string]Spec{
 	},
 	"alpine:3.21": {
 		URLs: map[string]string{
-			"amd64": "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.0-x86_64-bios-cloudinit-r0.qcow2",
+			"amd64": "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.0-x86_64-uefi-cloudinit-r0.qcow2",
 			"arm64": "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.0-aarch64-uefi-cloudinit-r0.qcow2",
 		},
 		Profile: Profile{
@@ -56,7 +56,7 @@ var registry = map[string]Spec{
 	},
 	"alpine:3.20": {
 		URLs: map[string]string{
-			"amd64": "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/cloud/nocloud_alpine-3.20.0-x86_64-bios-cloudinit-r0.qcow2",
+			"amd64": "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/cloud/nocloud_alpine-3.20.0-x86_64-uefi-cloudinit-r0.qcow2",
 			"arm64": "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/cloud/nocloud_alpine-3.20.0-aarch64-uefi-cloudinit-r0.qcow2",
 		},
 		Profile: Profile{

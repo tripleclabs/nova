@@ -331,6 +331,15 @@ func (s *Server) Export(ctx context.Context, req *pb.ExportRequest) (*pb.ExportR
 		hasUser = strings.TrimSpace(string(data)) != "nova"
 	}
 
+	emit := func(msg string) {
+		s.events.publish(&pb.ClusterEvent{
+			Type:      "log",
+			Node:      nodeName,
+			Detail:    msg,
+			Timestamp: timestamppb.Now(),
+		})
+	}
+
 	opts := vm.ExportOptions{
 		Format:        format,
 		OutputPath:    req.OutputPath,
@@ -338,6 +347,7 @@ func (s *Server) Export(ctx context.Context, req *pb.ExportRequest) (*pb.ExportR
 		ZeroFreeSpace: req.ZeroFreeSpace,
 		SnapshotName:  req.SnapshotName,
 		HasUser:       hasUser,
+		Emit:          emit,
 	}
 
 	result, err := s.orch.Export(ctx, req.Name, opts)

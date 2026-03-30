@@ -7,14 +7,17 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/tripleclabs/nova/internal/sysprep"
 )
+
 
 // ExportFormat represents a supported output disk format.
 type ExportFormat string
@@ -76,6 +79,9 @@ type ExportOptions struct {
 	// CPUs and MemoryMB are used for OVA/OVF metadata. Defaults to 2/2048 if unset.
 	CPUs     uint
 	MemoryMB uint64
+	// Emit, if set, is called with progress messages during export.
+	// If nil, progress is silently discarded.
+	Emit func(string)
 }
 
 // ExportResult contains information about the completed export.
@@ -85,11 +91,27 @@ type ExportResult struct {
 	SizeBytes  int64
 }
 
-// Export takes a running VM, optionally snapshots it, syspreps it, shuts it
-// down, and flattens its disk into a standalone image in the target format.
+// Export takes a running VM and produces a standalone disk image in the target
+// format. Sysprep (when enabled) runs on a fully independent clone of the VM
+// disk — the VM's own disk is never touched, so the VM can be restarted
+// normally after export and exported again without issue.
+//
+// Pipeline:
+//  1. Shut down the VM (needed for a consistent disk snapshot).
+//  2. Clone the VM disk into a temporary standalone image.
+//  3. If sysprep: boot an ephemeral VM from the clone, sysprep it, shut it down.
+//  4. Convert the clone to the requested output format.
+//  5. Delete the clone. The VM's original disk is untouched.
 func (o *Orchestrator) Export(ctx context.Context, name string, opts ExportOptions) (*ExportResult, error) {
 	if name == "" {
 		name = "default"
+	}
+
+	// emitf sends a progress message if an Emit callback is configured.
+	emitf := func(format string, args ...any) {
+		if opts.Emit != nil {
+			opts.Emit(fmt.Sprintf(format, args...))
+		}
 	}
 
 	// Refuse export without a user block — prevents leaking the internal nova user.
@@ -113,90 +135,104 @@ func (o *Orchestrator) Export(ctx context.Context, name string, opts ExportOptio
 	if outputPath == "" {
 		outputPath = name + opts.Format.ExportExtension()
 	}
-
-	// Check output doesn't already exist.
 	if _, err := os.Stat(outputPath); err == nil {
 		return nil, fmt.Errorf("output file %q already exists", outputPath)
 	}
 
-	// --- Optional: pre-sysprep snapshot for rollback ---
-	if opts.SnapshotName != "" {
-		fmt.Printf("[export] Taking snapshot %q before sysprep...\n", opts.SnapshotName)
-		diskPath := findDisk(machineDir)
-		if diskPath == "" {
-			return nil, fmt.Errorf("no disk found for VM %q", name)
-		}
-		if err := qemuImgSnapshot(diskPath, opts.SnapshotName); err != nil {
-			return nil, fmt.Errorf("creating pre-sysprep snapshot: %w", err)
-		}
-		fmt.Printf("[export] Snapshot %q created — use 'nova snapshot restore %s' to roll back.\n", opts.SnapshotName, opts.SnapshotName)
+	// --- Shut down the VM to get a consistent disk state ---
+	emitf("Shutting down %q...", name)
+	if err := o.Down(name); err != nil {
+		return nil, fmt.Errorf("shutting down VM: %w", err)
 	}
 
-	// --- Sysprep ---
+	diskPath := findDisk(machineDir)
+	if diskPath == "" {
+		return nil, fmt.Errorf("no disk found for VM %q", name)
+	}
+	srcFormat := "qcow2"
+	if strings.HasSuffix(diskPath, ".raw") {
+		srcFormat = "raw"
+	}
+
+	// --- Optional: checkpoint snapshot on the original disk for rollback ---
+	if opts.SnapshotName != "" {
+		emitf("Taking snapshot %q...", opts.SnapshotName)
+		if err := qemuImgSnapshot(diskPath, opts.SnapshotName); err != nil {
+			return nil, fmt.Errorf("creating snapshot: %w", err)
+		}
+		emitf("Snapshot %q created — use 'nova snapshot restore %s' to roll back.", opts.SnapshotName, opts.SnapshotName)
+	}
+
+	// --- Clone the disk into a fully independent temporary image ---
+	// The clone is a standalone qcow2 with no backing-file dependency.
+	// All export operations (sysprep, conversion) run on the clone;
+	// the VM's original disk is never modified.
+	clonePath := diskPath + ".export-clone.qcow2"
+	defer os.Remove(clonePath)
+
+	emitf("Cloning disk (this may take a moment)...")
+	if err := convertDisk(diskPath, srcFormat, clonePath, "qcow2"); err != nil {
+		return nil, fmt.Errorf("cloning disk: %w", err)
+	}
+
+	// From here, all work targets clonePath. srcFormat is always qcow2 for the clone.
+	exportDisk := clonePath
+	exportFmt := "qcow2"
+
+	// --- Sysprep on the ephemeral VM booted from the clone ---
 	if !opts.NoClean {
-		fmt.Printf("[export] Running sysprep on %q...\n", name)
+		emitf("Starting ephemeral VM for sysprep...")
+		ephHV, sshHost, sshPort, err := o.startExportVM(ctx, name, clonePath, machineDir, opts.CPUs, opts.MemoryMB)
+		if err != nil {
+			return nil, fmt.Errorf("starting export VM: %w", err)
+		}
+		defer ephHV.ForceKill()
+
+		// Wait for SSH (up to 5 minutes for slow boots).
+		addr := net.JoinHostPort(sshHost, sshPort)
+		emitf("Waiting for SSH at %s...", addr)
+		waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer waitCancel()
+		if err := waitForExportSSH(waitCtx, addr); err != nil {
+			return nil, fmt.Errorf("export VM SSH not ready: %w", err)
+		}
 
 		keyData, err := os.ReadFile(filepath.Join(machineDir, "ssh", "nova_ed25519"))
 		if err != nil {
 			return nil, fmt.Errorf("reading SSH key for sysprep: %w", err)
 		}
 
-		o.mu.RLock()
-		hv := o.hypervisors[name]
-		o.mu.RUnlock()
-		if hv == nil {
-			return nil, fmt.Errorf("no active hypervisor handle for %q", name)
-		}
-
-		guestIP, err := hv.GuestIP()
-		if err != nil {
-			return nil, fmt.Errorf("getting guest IP for sysprep: %w", err)
-		}
-
+		emitf("Running sysprep...")
 		sshCfg := sysprep.SSHConfig{
-			Host:       guestIP,
-			Port:       "22",
+			Host:       sshHost,
+			Port:       sshPort,
 			User:       "nova",
 			PrivateKey: keyData,
 		}
-
 		sysprepOpts := sysprep.Options{
 			ZeroFreeSpace:  opts.ZeroFreeSpace,
 			RemoveNovaUser: opts.HasUser,
+			TargetHyperV:   opts.Format == FormatVHDX,
+		}
+		// Wire sysprep output through the emit callback (line-buffered).
+		var sysprepOut io.Writer = io.Discard
+		if opts.Emit != nil {
+			sysprepOut = &lineEmitWriter{emit: opts.Emit}
+		}
+		if _, err := sysprep.Run(ctx, sshCfg, sysprepOpts, sysprepOut); err != nil {
+			emitf("Warning: %v", err)
+			emitf("Sysprep completed with errors. Proceeding with export.")
 		}
 
-		results, err := sysprep.Run(ctx, sshCfg, sysprepOpts, os.Stdout)
-		if err != nil {
-			// Report which steps failed but don't necessarily abort — the
-			// error from sysprep.Run is informational (counts failures).
-			fmt.Printf("[export] Warning: %v\n", err)
-			fmt.Printf("[export] Sysprep completed with errors. Proceeding with export.\n")
-		}
-		_ = results
+		emitf("Shutting down ephemeral VM...")
+		stopCtx, stopCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer stopCancel()
+		ephHV.Stop(stopCtx) //nolint:errcheck
 	}
 
-	// --- Graceful shutdown ---
-	fmt.Printf("[export] Shutting down %q...\n", name)
-	if err := o.Down(name); err != nil {
-		return nil, fmt.Errorf("shutting down VM: %w", err)
-	}
-
-	// --- Flatten disk ---
-	diskPath := findDisk(machineDir)
-	if diskPath == "" {
-		return nil, fmt.Errorf("no disk found for VM %q after shutdown", name)
-	}
-
-	// Detect the source format for qemu-img.
-	srcFormat := "qcow2"
-	if strings.HasSuffix(diskPath, ".raw") {
-		srcFormat = "raw"
-	}
-
+	// --- Convert clone to output format ---
 	if opts.Format == FormatOVA {
-		// OVA is a tar archive containing an OVF descriptor + VMDK disk.
-		fmt.Printf("[export] Building OVA (VMDK + OVF descriptor)...\n")
-
+		emitf("Building OVA (VMDK + OVF descriptor)...")
 		cpus := opts.CPUs
 		if cpus == 0 {
 			cpus = 2
@@ -205,20 +241,18 @@ func (o *Orchestrator) Export(ctx context.Context, name string, opts ExportOptio
 		if memMB == 0 {
 			memMB = 2048
 		}
-
-		if err := buildOVA(diskPath, srcFormat, outputPath, name, cpus, memMB); err != nil {
+		if err := buildOVA(exportDisk, exportFmt, outputPath, name, cpus, memMB); err != nil {
 			os.Remove(outputPath)
 			return nil, fmt.Errorf("building OVA: %w", err)
 		}
 	} else {
-		fmt.Printf("[export] Converting %s → %s...\n", srcFormat, opts.Format)
-		if err := convertDisk(diskPath, srcFormat, outputPath, string(opts.Format)); err != nil {
-			os.Remove(outputPath) // Clean up partial file.
+		emitf("Converting %s → %s...", exportFmt, opts.Format)
+		if err := convertDisk(exportDisk, exportFmt, outputPath, string(opts.Format)); err != nil {
+			os.Remove(outputPath)
 			return nil, fmt.Errorf("converting disk: %w", err)
 		}
 	}
 
-	// Get output file size.
 	fi, err := os.Stat(outputPath)
 	if err != nil {
 		return nil, fmt.Errorf("stat output: %w", err)
@@ -229,9 +263,46 @@ func (o *Orchestrator) Export(ctx context.Context, name string, opts ExportOptio
 		Format:     opts.Format,
 		SizeBytes:  fi.Size(),
 	}
-
-	fmt.Printf("[export] Done: %s (%s, %s)\n", result.OutputPath, result.Format, humanSize(result.SizeBytes))
+	emitf("Done: %s (%s, %s)", result.OutputPath, result.Format, humanSize(result.SizeBytes))
 	return result, nil
+}
+
+// lineEmitWriter is an io.Writer that buffers bytes and calls emit for each
+// complete line (stripping the trailing newline). Partial lines are held until
+// the next write or until the writer is garbage-collected.
+type lineEmitWriter struct {
+	emit func(string)
+	buf  []byte
+}
+
+func (w *lineEmitWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		idx := bytes.IndexByte(w.buf, '\n')
+		if idx < 0 {
+			break
+		}
+		w.emit(string(w.buf[:idx]))
+		w.buf = w.buf[idx+1:]
+	}
+	return len(p), nil
+}
+
+// waitForExportSSH polls until the address accepts a TCP connection or ctx expires.
+func waitForExportSSH(ctx context.Context, addr string) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for SSH at %s: %w", addr, ctx.Err())
+		default:
+		}
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // findDisk returns the path to the VM's disk image (qcow2 or raw).

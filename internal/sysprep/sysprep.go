@@ -30,6 +30,10 @@ type Options struct {
 	// RemoveNovaUser removes the internal "nova" user entirely. Should be set
 	// when exporting an image that has a configured user block.
 	RemoveNovaUser bool
+	// TargetHyperV injects Hyper-V storage and network drivers into the
+	// initramfs so the image boots correctly on Hyper-V / Azure.
+	// Required when exporting to VHDX format.
+	TargetHyperV bool
 }
 
 // OSFamily represents a detected OS family for profile selection.
@@ -76,6 +80,21 @@ func Run(ctx context.Context, sshCfg SSHConfig, opts Options, output io.Writer) 
 	fmt.Fprintf(output, "[sysprep] Detected OS family: %s\n", osFamily)
 
 	steps := buildProfile(osFamily, opts)
+
+	// Emit Secure Boot guidance for Hyper-V Gen 2 exports so users aren't left
+	// debugging "unsigned image's hash is not allowed" errors blind.
+	if opts.TargetHyperV {
+		switch osFamily {
+		case OSAlpine:
+			fmt.Fprintf(output, "[sysprep] NOTE: Alpine does not ship a Microsoft-signed shim. "+
+				"Secure Boot MUST be disabled in the Hyper-V VM: "+
+				"Settings → Security → uncheck Enable Secure Boot.\n")
+		default:
+			fmt.Fprintf(output, "[sysprep] NOTE: Hyper-V Gen 2 Secure Boot requires the "+
+				"\"Microsoft UEFI Certificate Authority\" template (not \"Microsoft Windows\"). "+
+				"Set this in VM Settings → Security, or disable Secure Boot entirely.\n")
+		}
+	}
 
 	var results []Result
 	var failures int
@@ -149,6 +168,9 @@ func buildProfile(family OSFamily, opts Options) []Step {
 		Step{"Remove cloud-init NoCloud seed", "sudo rm -rf /var/lib/cloud/seed/nocloud* 2>/dev/null || true"},
 		Step{"Remove Nova /etc/hosts entries", "sudo sed -i '/# nova-managed/d' /etc/hosts 2>/dev/null || true"},
 		Step{"Flush ARP cache", "sudo ip neigh flush all 2>/dev/null || true"},
+		// Remove nova shared-folder mounts (9p / virtiofs) from fstab — these
+		// are nova-specific and will not exist on the target hypervisor.
+		Step{"Remove shared-folder fstab entries", "sudo sed -i -E '/[[:space:]]+(9p|virtiofs)[[:space:]]/d' /etc/fstab 2>/dev/null || true"},
 	)
 
 	// --- OS-specific steps ---
@@ -203,6 +225,41 @@ func buildProfile(family OSFamily, opts Options) []Step {
 			Step{"Remove udev persistent rules", "sudo rm -f /etc/udev/rules.d/70-persistent-* 2>/dev/null || true"},
 			Step{"Clear shell history", "sudo find /home /root -maxdepth 2 \\( -name '.bash_history' -o -name '.ash_history' \\) -delete 2>/dev/null || true"},
 		)
+	}
+
+	// --- Optional: Hyper-V initramfs injection ---
+	// Add hv_vmbus, hv_storvsc, and hv_netvsc to the initramfs so the image
+	// boots on Hyper-V Gen 2 and Azure (without these the kernel panics on
+	// mount because virtio drivers are absent from the Hyper-V SCSI path).
+	// Also regenerate GRUB so root= references use UUIDs, not device names
+	// (device names change from /dev/vda under QEMU to /dev/sda under Hyper-V).
+	if opts.TargetHyperV {
+		switch family {
+		case OSUbuntu, OSDebian:
+			steps = append(steps,
+				Step{"Inject Hyper-V drivers into initramfs",
+					"printf 'hv_vmbus\\nhv_storvsc\\nhv_netvsc\\n' | sudo tee -a /etc/initramfs-tools/modules > /dev/null && sudo update-initramfs -u"},
+				Step{"Update GRUB for Hyper-V",
+					"sudo update-grub 2>/dev/null || true"},
+			)
+		case OSFedora:
+			steps = append(steps,
+				Step{"Inject Hyper-V drivers into initramfs",
+					"sudo dracut --add-drivers 'hv_vmbus hv_storvsc hv_netvsc' --force"},
+				Step{"Update GRUB for Hyper-V",
+					"sudo grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || sudo grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || true"},
+			)
+		case OSAlpine:
+			// Alpine uses mkinitfs instead of dracut/update-initramfs.
+			// Write a features.d file with glob patterns covering all three HV drivers,
+			// enable the feature in mkinitfs.conf, then rebuild the initramfs.
+			steps = append(steps,
+				Step{"Inject Hyper-V drivers into initramfs",
+					"printf 'kernel/drivers/hv/*\\nkernel/drivers/scsi/hv_storvsc*\\nkernel/drivers/net/hyperv/*\\n' | sudo tee /etc/mkinitfs/features.d/hyperv.modules > /dev/null && " +
+						"grep -q hyperv /etc/mkinitfs/mkinitfs.conf || sudo sed -i 's/features=\"\\(.*\\)\"/features=\"\\1 hyperv\"/' /etc/mkinitfs/mkinitfs.conf && " +
+						"sudo mkinitfs $(uname -r)"},
+			)
+		}
 	}
 
 	// --- Optional: remove nova user ---

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"google.golang.org/protobuf/types/known/emptypb"
 	pb "github.com/tripleclabs/nova/pkg/novapb/nova/v1"
 	"github.com/spf13/cobra"
 )
@@ -59,7 +60,32 @@ func runExport(cmd *cobra.Command, args []string) error {
 				return err
 			}
 		}
-		resp, err := client.Export(ctx, &pb.ExportRequest{
+
+		// Subscribe to events BEFORE calling Export so no progress is missed.
+		evtCtx, evtCancel := context.WithCancel(ctx)
+		defer evtCancel()
+
+		stream, err := client.StreamEvents(evtCtx, &emptypb.Empty{})
+		if err != nil {
+			return fmt.Errorf("streaming events: %w", err)
+		}
+
+		// Forward export log events to stdout in a background goroutine.
+		evtDone := make(chan struct{})
+		go func() {
+			defer close(evtDone)
+			for {
+				evt, err := stream.Recv()
+				if err != nil {
+					return
+				}
+				if evt.Type == "log" && (evt.Node == name || evt.Node == "default") {
+					fmt.Printf("[export] %s\n", evt.Detail)
+				}
+			}
+		}()
+
+		resp, exportErr := client.Export(ctx, &pb.ExportRequest{
 			Name:          name,
 			Format:        exportFormat,
 			OutputPath:    exportOutput,
@@ -67,8 +93,13 @@ func runExport(cmd *cobra.Command, args []string) error {
 			ZeroFreeSpace: exportZero,
 			SnapshotName:  exportSnapshot,
 		})
-		if err != nil {
-			return fmt.Errorf("export: %w", err)
+
+		// Cancel the event stream and wait for the goroutine to drain.
+		evtCancel()
+		<-evtDone
+
+		if exportErr != nil {
+			return fmt.Errorf("export: %w", exportErr)
 		}
 
 		fmt.Printf("Exported: %s (%s, %s)\n", resp.OutputPath, resp.Format, humanBytes(resp.SizeBytes))
