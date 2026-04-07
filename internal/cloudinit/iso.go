@@ -2,12 +2,23 @@ package cloudinit
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/kdomanski/iso9660"
 )
+
+// newInstanceID returns a unique instance-id for cloud-init meta-data.
+// Using hostname alone causes cloud-init to skip re-provisioning when
+// a previously exported image is booted with the same VM name.
+func newInstanceID(hostname string) string {
+	var b [4]byte
+	rand.Read(b[:])
+	return hostname + "-" + hex.EncodeToString(b[:])
+}
 
 // BuildCIDATADir writes cloud-init NoCloud files to a directory for use with
 // VirtioFS. This is used on macOS where Apple Virtualization.framework doesn't
@@ -18,7 +29,7 @@ func BuildCIDATADir(dirPath string, hostname string, userData []byte, networkCon
 		return fmt.Errorf("creating cidata dir: %w", err)
 	}
 
-	metaData := fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", hostname, hostname)
+	metaData := fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", newInstanceID(hostname), hostname)
 	if err := os.WriteFile(filepath.Join(dirPath, "meta-data"), []byte(metaData), 0644); err != nil {
 		return fmt.Errorf("writing meta-data: %w", err)
 	}
@@ -48,7 +59,7 @@ func BuildCIDATAISO(outputPath string, hostname string, userData []byte, network
 	defer writer.Cleanup()
 
 	// meta-data: minimal YAML with instance-id and local-hostname.
-	metaData := fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", hostname, hostname)
+	metaData := fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", newInstanceID(hostname), hostname)
 	if err := writer.AddFile(bytes.NewReader([]byte(metaData)), "meta-data"); err != nil {
 		return fmt.Errorf("adding meta-data to ISO: %w", err)
 	}

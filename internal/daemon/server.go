@@ -88,8 +88,11 @@ func NewServer(stateDir string, shutdownFn func()) (*Server, error) {
 	cond := network.NewConditioner()
 
 	// Attempt to start the L2 switch (Linux only; stub returns nil on other platforms).
+	// Each daemon gets its own TAP name and subnet so concurrent daemons don't
+	// fight over 10.0.0.0/24 (e.g. a user's main daemon and a novatest daemon).
 	tapName := tapDeviceName(stateDir)
-	sw, err := network.NewL2Switch(cond, tapName)
+	cidr, gateway := daemonSubnet(stateDir)
+	sw, err := network.NewL2Switch(cond, tapName, cidr, gateway)
 	if err != nil {
 		slog.Warn("L2 switch unavailable (missing CAP_NET_ADMIN?), falling back to SLIRP", "tap", tapName, "err", err)
 		sw = nil
@@ -490,6 +493,23 @@ func tapDeviceName(stateDir string) string {
 	h := fnv.New32a()
 	h.Write([]byte(stateDir))
 	return fmt.Sprintf("nova-%08x", h.Sum32())
+}
+
+// daemonSubnet derives a unique /24 in 10.0.0.0/8 from the state directory.
+// The default state dir (~/.nova) keeps 10.0.0.0/24 for back-compat; any
+// other state dir (integration tests) gets 10.{hash}.0.0/24 so multiple
+// daemons can run concurrently without TAP/routing conflicts.
+func daemonSubnet(stateDir string) (cidr, gateway string) {
+	home, _ := os.UserHomeDir()
+	defaultStateDir := filepath.Join(home, ".nova")
+	if stateDir == defaultStateDir {
+		return "10.0.0.0/24", "10.0.0.1"
+	}
+	h := fnv.New32a()
+	h.Write([]byte(stateDir))
+	// Map to 10.{1..254}.0.0/24. Avoid .0 (all-zero) and .255 (edge).
+	octet := byte(h.Sum32()%254) + 1
+	return fmt.Sprintf("10.%d.0.0/24", octet), fmt.Sprintf("10.%d.0.1", octet)
 }
 
 func (s *Server) Shutdown(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {

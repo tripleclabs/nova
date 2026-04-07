@@ -48,10 +48,8 @@ func TestIntegration_SingleVM_SSH(t *testing.T) {
 }
 
 // TestIntegration_MultiNode_SSH boots a 2-node cluster and verifies
-// both nodes are reachable via SSH with correct hostnames.
-// Note: inter-VM networking requires Linux (QEMU socket multicast) or
-// macOS vmnet (not yet implemented). This test verifies multi-node boot
-// and host-to-guest SSH only.
+// both nodes are reachable via SSH with correct hostnames and can
+// reach each other over the L2 switch (Linux TAP, macOS VZ socketpairs).
 func TestIntegration_MultiNode_SSH(t *testing.T) {
 	cluster := novatest.NewCluster(t, novatest.WithHCL(`
 		defaults {

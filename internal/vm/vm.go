@@ -118,9 +118,15 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath, configDir string, emit f
 		}
 	}
 
-	// Look for user cloud-config alongside nova.hcl.
+	// Look for user cloud-config alongside nova.hcl. Prefer configDir (the
+	// original project directory) over cfgPath's directory, which may be the
+	// daemon's state dir when running via gRPC.
 	var userDataPath string
-	candidate := filepath.Join(filepath.Dir(cfgPath), "cloud-config.yaml")
+	searchDir := configDir
+	if searchDir == "" {
+		searchDir = filepath.Dir(cfgPath)
+	}
+	candidate := filepath.Join(searchDir, "cloud-config.yaml")
 	if _, err := os.Stat(candidate); err == nil {
 		userDataPath = candidate
 	}
@@ -131,7 +137,8 @@ func (o *Orchestrator) Up(ctx context.Context, cfgPath, configDir string, emit f
 	// On macOS multi-node, create an in-process L2 switch for inter-VM networking.
 	// On Linux this is created eagerly by the daemon server (with TAP + NAT).
 	if isMultiNode && runtime.GOOS == "darwin" && o.sw == nil {
-		sw, err := network.NewL2SwitchForCluster(nil, "")
+		gw := gatewayFromSubnet(subnet)
+		sw, err := network.NewL2SwitchForCluster(nil, "", subnet, gw)
 		if err != nil {
 			return fmt.Errorf("creating L2 switch: %w", err)
 		}
@@ -280,8 +287,8 @@ func (o *Orchestrator) upNode(
 			ciCfg.SwitchMAC = switchMAC // dual-NIC: NAT + switched
 		}
 	} else if o.sw != nil {
-		ciCfg.StaticIP = generateIP(machineID)
-		ciCfg.Subnet = "10.0.0.0/24"
+		ciCfg.StaticIP = generateIP(machineID, o.sw.Subnet())
+		ciCfg.Subnet = o.sw.Subnet()
 	}
 	// Inject extra user if configured.
 	if node.User != nil {
@@ -362,7 +369,7 @@ func (o *Orchestrator) upNode(
 		vmCfg.Network.SwitchMAC = switchMAC
 		// Single-VM gets a deterministic IP; multi-node nodes already have node.IP set.
 		if !isMultiNode {
-			node.IP = generateIP(machineID)
+			node.IP = generateIP(machineID, o.sw.Subnet())
 			vmCfg.Network.StaticIP = node.IP
 		}
 	}
@@ -454,7 +461,7 @@ func (o *Orchestrator) upNode(
 		if node.IP != "" {
 			sshEP.Host = node.IP
 		} else {
-			sshEP.Host = generateIP(machineID)
+			sshEP.Host = generateIP(machineID, o.sw.Subnet())
 		}
 		sshEP.Port = 22
 	} else if isMultiNode && runtime.GOOS == "linux" {
@@ -903,7 +910,7 @@ func (o *Orchestrator) restartNode(
 		vmCfg.Network.SwitchFile = switchFile
 		vmCfg.Network.SwitchMAC = switchMAC
 		if !isMultiNode {
-			node.IP = generateIP(machineID)
+			node.IP = generateIP(machineID, o.sw.Subnet())
 			vmCfg.Network.StaticIP = node.IP
 		}
 	}
@@ -973,7 +980,7 @@ func (o *Orchestrator) restartNode(
 		if node.IP != "" {
 			sshEP.Host = node.IP
 		} else {
-			sshEP.Host = generateIP(machineID)
+			sshEP.Host = generateIP(machineID, o.sw.Subnet())
 		}
 	} else if isMultiNode && runtime.GOOS == "linux" {
 		sshEP.Host = "127.0.0.1"
@@ -1011,12 +1018,13 @@ func hashConfig(path string) string {
 // generateMAC derives a stable locally-administered MAC from a seed string.
 // Using SHA-256 ensures unique, reproducible addresses per machine/NIC without
 // storing them separately — the same seed always produces the same MAC.
-// generateIP derives a stable 10.0.0.x address from a seed string.
-// The host byte is drawn from the SHA-256 hash, clamped to [2, 254] so it
-// never collides with the gateway (.1) or broadcast (.255).
-func generateIP(seed string) string {
+// generateIP derives a stable host address within the given /24 subnet from a
+// seed string. The host byte is drawn from the SHA-256 hash, clamped to [2, 254]
+// so it never collides with the gateway (.1) or broadcast (.255).
+// subnet must be a /24 CIDR like "10.0.0.0/24".
+func generateIP(seed, subnet string) string {
+	prefix := subnetPrefix(subnet)
 	h := sha256.Sum256([]byte(seed))
-	// Use byte 3 of the hash, clamped to [2, 254].
 	host := int(h[3])
 	if host < 2 {
 		host = 2
@@ -1024,7 +1032,27 @@ func generateIP(seed string) string {
 	if host > 254 {
 		host = 254
 	}
-	return fmt.Sprintf("10.0.0.%d", host)
+	return fmt.Sprintf("%s%d", prefix, host)
+}
+
+// subnetPrefix extracts the first three octets as a dotted prefix, e.g.
+// "10.0.0.0/24" → "10.0.0.". Falls back to "10.0.0." on malformed input.
+func subnetPrefix(cidr string) string {
+	base, _, found := strings.Cut(cidr, "/")
+	if !found {
+		return "10.0.0."
+	}
+	parts := strings.Split(base, ".")
+	if len(parts) != 4 {
+		return "10.0.0."
+	}
+	return parts[0] + "." + parts[1] + "." + parts[2] + "."
+}
+
+// gatewayFromSubnet returns the first-host address of a /24 subnet
+// (e.g. "10.0.0.0/24" → "10.0.0.1").
+func gatewayFromSubnet(cidr string) string {
+	return subnetPrefix(cidr) + "1"
 }
 
 func generateMAC(seed string) string {
@@ -1078,8 +1106,8 @@ func (o *Orchestrator) startExportVM(ctx context.Context, name, diskPath, machin
 			return nil, "", "", fmt.Errorf("allocating switch port for export VM: %w", err)
 		}
 		vmCfg.Network.SwitchFile = switchFile
-		vmCfg.Network.StaticIP = generateIP(name)
-		sshHost = generateIP(name)
+		vmCfg.Network.StaticIP = generateIP(name, o.sw.Subnet())
+		sshHost = generateIP(name, o.sw.Subnet())
 		sshPort = "22"
 	} else {
 		// SLIRP fallback: pick a free host port and forward it to guest:22.

@@ -301,6 +301,57 @@ func validateName(name string) error {
 	return nil
 }
 
+// FlattenDisk exports a single machine's snapshot as a standalone qcow2 file
+// with the full backing chain merged in. The caller is responsible for removing
+// the returned temporary file when done.
+func (m *Manager) FlattenDisk(snapName, machineNameOrID string) (string, error) {
+	snap, err := m.loadMeta(snapName)
+	if err != nil {
+		return "", fmt.Errorf("snapshot %q not found", snapName)
+	}
+
+	// Find the requested machine.
+	var target *MachineMeta
+	for i := range snap.Machines {
+		mm := &snap.Machines[i]
+		if mm.ID == machineNameOrID || mm.Name == machineNameOrID {
+			target = mm
+			break
+		}
+	}
+	if target == nil {
+		// If only one machine exists and none was specified, use it.
+		if machineNameOrID == "" && len(snap.Machines) == 1 {
+			target = &snap.Machines[0]
+		} else {
+			names := make([]string, len(snap.Machines))
+			for i, mm := range snap.Machines {
+				names[i] = mm.Name + " (" + mm.ID + ")"
+			}
+			return "", fmt.Errorf("machine %q not found in snapshot %q; available: %s",
+				machineNameOrID, snapName, strings.Join(names, ", "))
+		}
+	}
+
+	srcDisk := filepath.Join(m.store.MachineDir(target.ID), target.DiskPath)
+	if _, err := os.Stat(srcDisk); err != nil {
+		return "", fmt.Errorf("disk not found for machine %q: %w", target.ID, err)
+	}
+
+	tmp, err := os.CreateTemp("", "nova-flatten-*.qcow2")
+	if err != nil {
+		return "", fmt.Errorf("creating temp file: %w", err)
+	}
+	tmp.Close()
+
+	if err := qemuImgConvert(srcDisk, tmp.Name(), snapName); err != nil {
+		os.Remove(tmp.Name())
+		return "", fmt.Errorf("flattening snapshot disk: %w", err)
+	}
+
+	return tmp.Name(), nil
+}
+
 // --- qemu-img wrappers ---
 
 func qemuImgSnapshot(diskPath, snapName string) error {

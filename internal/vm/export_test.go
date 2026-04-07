@@ -142,19 +142,20 @@ func TestExport_DefaultName(t *testing.T) {
 	}
 }
 
-func TestExport_NoUserBlockRefused(t *testing.T) {
+func TestExport_NoUserBlockAllowed(t *testing.T) {
 	o := newTestOrchestrator(t)
 	createMachine(t, o, "myvm", state.StateRunning)
 
+	// Without a user block, export is allowed (with a warning). Sysprep still
+	// removes the internal nova user, so nothing leaks — the image is valid
+	// for reuse by nova, which recreates users via cloud-init on next boot.
 	_, err := o.Export(t.Context(), "myvm", ExportOptions{
 		Format:  FormatQCOW2,
 		HasUser: false,
 	})
-	if err == nil {
-		t.Fatal("expected error for export without user block")
-	}
-	if !strings.Contains(err.Error(), "user block") {
-		t.Errorf("error = %q, should mention user block", err)
+	// Should fail for a reason OTHER than user block.
+	if err != nil && strings.Contains(err.Error(), "user block") {
+		t.Errorf("export without user block should proceed, got: %v", err)
 	}
 }
 

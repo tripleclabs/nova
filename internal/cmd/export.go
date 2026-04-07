@@ -32,6 +32,11 @@ The export pipeline:
   3. Flatten the CoW overlay into a standalone image
   4. Convert to the target format
 
+Sysprep always removes the internal nova user. If nova.hcl has no user block,
+the exported image will have no login user — this is fine for nova base images
+(cloud-init recreates users on next 'nova up'), but for images used on other
+hypervisors, add a user block to nova.hcl first.
+
 Examples:
   nova export                                    # Export "default" VM as qcow2
   nova export myvm --format vmdk -o golden.vmdk  # Export as VMware image

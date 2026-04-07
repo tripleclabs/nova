@@ -175,15 +175,28 @@ func (c *Cluster) Nodes() []*Node {
 	return nodes
 }
 
-// WaitReady blocks until all nodes are reachable via SSH.
+// DefaultReadyTimeout is how long WaitReady waits per node by default.
+// First-boot cloud-init (package installs, etc.) can easily exceed a minute.
+const DefaultReadyTimeout = 3 * time.Minute
+
+// WaitReady blocks until all nodes are reachable via SSH. Uses
+// DefaultReadyTimeout per node. For custom timeouts, use WaitReadyTimeout.
 func (c *Cluster) WaitReady() {
+	c.WaitReadyTimeout(DefaultReadyTimeout)
+}
+
+// WaitReadyTimeout blocks until all nodes are reachable via SSH, with a
+// per-node timeout.
+func (c *Cluster) WaitReadyTimeout(timeout time.Duration) {
 	c.t.Helper()
 	for _, n := range c.nodes {
-		c.t.Logf("novatest: waiting for %s...", n.Name)
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		c.t.Logf("novatest: waiting for %s (up to %s)...", n.Name, timeout)
+		// Add a small grace period on the RPC deadline so the server-side
+		// timeout fires first and returns a meaningful error.
+		ctx, cancel := context.WithTimeout(context.Background(), timeout+5*time.Second)
 		_, err := c.client.WaitReady(ctx, &pb.WaitReadyRequest{
 			Node:    n.Name,
-			Timeout: durationpb.New(45 * time.Second),
+			Timeout: durationpb.New(timeout),
 		})
 		cancel()
 		if err != nil {

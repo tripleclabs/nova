@@ -22,6 +22,8 @@ type L2Switch struct {
 	ports    map[string]*switchPort // nodeName → port
 	macTable map[[6]byte]string     // MAC → nodeName
 	cond     *Conditioner
+	cidr     string
+	gateway  string
 	ctx      context.Context
 	cancel   context.CancelFunc
 }
@@ -34,22 +36,30 @@ type switchPort struct {
 // NewL2Switch returns nil on macOS — the switch is created lazily by the
 // orchestrator only when a multi-node cluster is booted. This avoids adding
 // a second NIC to single-VM configs.
-func NewL2Switch(cond *Conditioner, tapName string) (*L2Switch, error) {
+func NewL2Switch(cond *Conditioner, tapName, cidr, gateway string) (*L2Switch, error) {
 	return nil, nil
 }
 
 // NewL2SwitchForCluster creates a new L2Switch for macOS multi-node clusters.
 // No TAP device or NAT is needed — VMs get internet via their NAT NIC.
-func NewL2SwitchForCluster(cond *Conditioner, tapName string) (*L2Switch, error) {
+func NewL2SwitchForCluster(cond *Conditioner, tapName, cidr, gateway string) (*L2Switch, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &L2Switch{
 		ports:    make(map[string]*switchPort),
 		macTable: make(map[[6]byte]string),
 		cond:     cond,
+		cidr:     cidr,
+		gateway:  gateway,
 		ctx:      ctx,
 		cancel:   cancel,
 	}, nil
 }
+
+// Subnet returns the CIDR assigned to this switch (e.g. "10.0.0.0/24").
+func (sw *L2Switch) Subnet() string { return sw.cidr }
+
+// Gateway returns the first-host address on the switch subnet (e.g. "10.0.0.1").
+func (sw *L2Switch) Gateway() string { return sw.gateway }
 
 // NewPort allocates a SOCK_DGRAM socketpair for a new VM.
 // Returns the VZ-side *os.File (pass to FileHandleNetworkDeviceAttachment).

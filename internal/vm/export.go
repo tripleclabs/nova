@@ -114,9 +114,13 @@ func (o *Orchestrator) Export(ctx context.Context, name string, opts ExportOptio
 		}
 	}
 
-	// Refuse export without a user block — prevents leaking the internal nova user.
+	// Warn if no user block is configured. Sysprep still removes the internal
+	// nova user, so nothing leaks — but the exported image will have no login
+	// user at all unless something (e.g. nova re-running cloud-init) recreates one.
 	if !opts.HasUser && !opts.NoClean {
-		return nil, fmt.Errorf("export requires a user block in nova.hcl — exported images must not contain the internal nova user. Add a user block or use --no-clean to skip sysprep")
+		emitf("Note: no user block configured. The exported image will have no login user. " +
+			"This is fine for nova base images (cloud-init will recreate users on next 'nova up'), " +
+			"but for images intended for other hypervisors, add a user block to nova.hcl.")
 	}
 
 	// Validate VM exists and is running.
@@ -210,8 +214,10 @@ func (o *Orchestrator) Export(ctx context.Context, name string, opts ExportOptio
 			PrivateKey: keyData,
 		}
 		sysprepOpts := sysprep.Options{
-			ZeroFreeSpace:  opts.ZeroFreeSpace,
-			RemoveNovaUser: opts.HasUser,
+			ZeroFreeSpace: opts.ZeroFreeSpace,
+			// Always remove the internal nova user — its SSH keys are ephemeral
+			// per-VM and must not persist into exported images.
+			RemoveNovaUser: true,
 			TargetHyperV:   opts.Format == FormatVHDX,
 		}
 		// Wire sysprep output through the emit callback (line-buffered).

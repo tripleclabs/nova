@@ -88,7 +88,7 @@ func ensureAlpineImage(t *testing.T) {
 	t.Helper()
 
 	out := nova(t, "image", "list")
-	if strings.Contains(out, "nova.local/alpine:3.21") {
+	if strings.Contains(out, "nova.local/alpine:3.23") {
 		t.Log("Alpine image already in nova cache")
 		return
 	}
@@ -108,10 +108,10 @@ func ensureAlpineImage(t *testing.T) {
 		t.Log("Alpine image already downloaded, building into cache...")
 	}
 
-	nova(t, "image", "build", imgPath, "--tag", "nova.local/alpine:3.21")
+	nova(t, "image", "build", imgPath, "--tag", "nova.local/alpine:3.23")
 
 	out = nova(t, "image", "list")
-	if !strings.Contains(out, "nova.local/alpine:3.21") {
+	if !strings.Contains(out, "nova.local/alpine:3.23") {
 		t.Fatalf("Alpine image not in cache after build:\n%s", out)
 	}
 }
@@ -147,7 +147,7 @@ func TestIntegration_ImageBuildAndList(t *testing.T) {
 	ensureAlpineImage(t)
 
 	out := nova(t, "image", "list")
-	if !strings.Contains(out, "nova.local/alpine:3.21") {
+	if !strings.Contains(out, "nova.local/alpine:3.23") {
 		t.Errorf("image list should contain alpine:\n%s", out)
 	}
 }
@@ -215,7 +215,7 @@ func TestIntegration_FullLifecycle(t *testing.T) {
 	cluster := novatest.NewCluster(t, novatest.WithHCL(`
 		vm {
 			name   = "lifecycle-test"
-			image  = "alpine:3.21"
+			image  = "alpine:3.23"
 			cpus   = 2
 			memory = "1G"
 		}

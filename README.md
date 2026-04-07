@@ -93,7 +93,7 @@ Nova has built-in support for common Linux distributions. Just use the shorthand
 
 ```hcl
 vm {
-  image = "ubuntu:24.04"   # or ubuntu:22.04, alpine:3.21, alpine:3.20
+  image = "ubuntu:24.04"   # or ubuntu:22.04, alpine:3.23
 }
 ```
 
@@ -105,7 +105,7 @@ To download an image ahead of time (e.g. before going offline):
 
 ```bash
 nova image get ubuntu:24.04
-nova image get alpine:3.21
+nova image get alpine:3.23
 ```
 
 ### Custom images

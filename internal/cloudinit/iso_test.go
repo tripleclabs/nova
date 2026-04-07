@@ -51,8 +51,11 @@ func TestBuildCIDATAISO_ContainsFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !containsString(data, "instance-id: verify-vm") {
-		t.Error("ISO should contain meta-data with instance-id")
+	if !containsString(data, "instance-id: verify-vm-") {
+		t.Error("ISO should contain meta-data with instance-id prefixed by hostname")
+	}
+	if !containsString(data, "local-hostname: verify-vm") {
+		t.Error("ISO should contain meta-data with local-hostname")
 	}
 	if !containsString(data, "#cloud-config") {
 		t.Error("ISO should contain user-data with #cloud-config")

@@ -21,16 +21,24 @@ import (
 // L2Switch is a userspace virtual Ethernet switch.
 // Each VM connects via a socketpair; the host connects via a TAP device.
 type L2Switch struct {
-	mu      sync.RWMutex
-	ports   map[string]*switchPort // nodeName → port
-	macTable map[[6]byte]string    // MAC → nodeName
+	mu       sync.RWMutex
+	ports    map[string]*switchPort // nodeName → port
+	macTable map[[6]byte]string     // MAC → nodeName
 	cond     *Conditioner
 	tapFile  *os.File
 	tapName  string
 	tapMAC   net.HardwareAddr
+	cidr     string // e.g. "10.0.0.0/24"
+	gateway  string // e.g. "10.0.0.1"
 	ctx      context.Context
 	cancel   context.CancelFunc
 }
+
+// Subnet returns the CIDR assigned to this switch (e.g. "10.0.0.0/24").
+func (sw *L2Switch) Subnet() string { return sw.cidr }
+
+// Gateway returns the host-side TAP address (e.g. "10.0.0.1").
+func (sw *L2Switch) Gateway() string { return sw.gateway }
 
 type switchPort struct {
 	name     string
@@ -38,12 +46,12 @@ type switchPort struct {
 }
 
 // NewL2Switch creates a new L2Switch backed by a TAP device named tapName
-// with address 10.0.0.1/24.  Returns an error if the TAP device cannot be
-// opened (e.g. missing CAP_NET_ADMIN).
-func NewL2Switch(cond *Conditioner, tapName string) (*L2Switch, error) {
-	tapFile, tapMAC, err := openTAP(tapName, "10.0.0.1", "10.0.0.0/24")
+// with the given gateway address (e.g. "10.0.0.1") in cidr (e.g. "10.0.0.0/24").
+// Returns an error if the TAP device cannot be opened (e.g. missing CAP_NET_ADMIN).
+func NewL2Switch(cond *Conditioner, tapName, cidr, gateway string) (*L2Switch, error) {
+	tapFile, tapMAC, err := openTAP(tapName, gateway, cidr)
 	if err != nil {
-		return nil, fmt.Errorf("opening nova0 TAP: %w", err)
+		return nil, fmt.Errorf("opening nova TAP: %w", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -54,11 +62,13 @@ func NewL2Switch(cond *Conditioner, tapName string) (*L2Switch, error) {
 		tapFile:  tapFile,
 		tapName:  tapName,
 		tapMAC:   tapMAC,
+		cidr:     cidr,
+		gateway:  gateway,
 		ctx:      ctx,
 		cancel:   cancel,
 	}
 
-	if err := enableNAT("10.0.0.0/24", tapName); err != nil {
+	if err := enableNAT(cidr, tapName); err != nil {
 		tapFile.Close()
 		cancel()
 		return nil, fmt.Errorf("enabling NAT: %w", err)
@@ -70,8 +80,8 @@ func NewL2Switch(cond *Conditioner, tapName string) (*L2Switch, error) {
 
 // NewL2SwitchForCluster creates an L2Switch for multi-node clusters.
 // On Linux this is identical to NewL2Switch (TAP-backed).
-func NewL2SwitchForCluster(cond *Conditioner, tapName string) (*L2Switch, error) {
-	return NewL2Switch(cond, tapName)
+func NewL2SwitchForCluster(cond *Conditioner, tapName, cidr, gateway string) (*L2Switch, error) {
+	return NewL2Switch(cond, tapName, cidr, gateway)
 }
 
 // NewPort allocates a socketpair for a new VM.  The QEMU-side *os.File is
@@ -119,16 +129,22 @@ func (sw *L2Switch) RemovePort(nodeName string) {
 // Close shuts down the switch (cancels reader goroutines, closes TAP, removes NAT rules).
 func (sw *L2Switch) Close() error {
 	sw.cancel()
-	disableNAT("10.0.0.0/24", sw.tapName)
+	disableNAT(sw.cidr, sw.tapName)
 	return sw.tapFile.Close()
 }
 
-const nftTableName = "nova_nat"
+// natTableName derives a per-daemon nftables table name from the TAP name so
+// that multiple daemons can run concurrently without overwriting each other's
+// NAT rules. Table names are 32-byte limited; "nova_nat_" + 13 = 22 chars.
+func natTableName(tapIface string) string {
+	return "nova_nat_" + tapIface
+}
 
 // enableNAT sets up IP forwarding and an nftables masquerade rule so VMs can
 // reach the internet via the host. Uses netlink in-process (CAP_NET_ADMIN only,
 // no root required).
 func enableNAT(subnet, tapIface string) error {
+	tblName := natTableName(tapIface)
 	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1\n"), 0644); err != nil {
 		return fmt.Errorf("enabling ip_forward: %w", err)
 	}
@@ -139,7 +155,7 @@ func enableNAT(subnet, tapIface string) error {
 	}
 
 	// Remove any stale table from a previous run before recreating.
-	c.DelTable(&nftables.Table{Family: nftables.TableFamilyIPv4, Name: nftTableName})
+	c.DelTable(&nftables.Table{Family: nftables.TableFamilyIPv4, Name: tblName})
 	_ = c.Flush()
 
 	_, ipNet, err := net.ParseCIDR(subnet)
@@ -148,7 +164,7 @@ func enableNAT(subnet, tapIface string) error {
 	}
 	ipv4 := ipNet.IP.To4()
 
-	t := c.AddTable(&nftables.Table{Family: nftables.TableFamilyIPv4, Name: nftTableName})
+	t := c.AddTable(&nftables.Table{Family: nftables.TableFamilyIPv4, Name: tblName})
 
 	// Forward chain: accept traffic to/from the nova subnet before firewalld
 	// (priority -1 runs ahead of firewalld's priority-0 filter chains).
@@ -246,11 +262,12 @@ func injectDockerUserRules(c *nftables.Conn, ipNet *net.IPNet) {
 
 // disableNAT removes the nftables table created by enableNAT.
 func disableNAT(subnet, tapIface string) {
+	_ = subnet
 	c, err := nftables.New()
 	if err != nil {
 		return
 	}
-	c.DelTable(&nftables.Table{Family: nftables.TableFamilyIPv4, Name: nftTableName})
+	c.DelTable(&nftables.Table{Family: nftables.TableFamilyIPv4, Name: natTableName(tapIface)})
 	_ = c.Flush()
 }
 

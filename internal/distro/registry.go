@@ -22,7 +22,7 @@ type Spec struct {
 }
 
 // registry is the built-in catalogue of known distributions.
-// Key format: "distro:version" (e.g. "ubuntu:24.04", "alpine:3.21").
+// Key format: "distro:version" (e.g. "ubuntu:24.04", "alpine:3.23").
 var registry = map[string]Spec{
 	"ubuntu:24.04": {
 		URLs: map[string]string{
@@ -44,20 +44,10 @@ var registry = map[string]Spec{
 			SudoLine: "ALL=(ALL) NOPASSWD:ALL",
 		},
 	},
-	"alpine:3.21": {
+	"alpine:3.23": {
 		URLs: map[string]string{
-			"amd64": "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.0-x86_64-uefi-cloudinit-r0.qcow2",
-			"arm64": "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.0-aarch64-uefi-cloudinit-r0.qcow2",
-		},
-		Profile: Profile{
-			Shell:    "/bin/sh",
-			DoasConf: "permit nopass nova\n",
-		},
-	},
-	"alpine:3.20": {
-		URLs: map[string]string{
-			"amd64": "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/cloud/nocloud_alpine-3.20.0-x86_64-uefi-cloudinit-r0.qcow2",
-			"arm64": "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/cloud/nocloud_alpine-3.20.0-aarch64-uefi-cloudinit-r0.qcow2",
+			"amd64": "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/nocloud_alpine-3.23.3-x86_64-uefi-cloudinit-r0.qcow2",
+			"arm64": "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/nocloud_alpine-3.23.3-aarch64-uefi-cloudinit-r0.qcow2",
 		},
 		Profile: Profile{
 			Shell:    "/bin/sh",

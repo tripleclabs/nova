@@ -33,7 +33,7 @@ func newImageGetCmd() *cobra.Command {
 		Long: `Downloads an official cloud image for a known Linux distribution and caches
 it locally so 'nova up' can use it immediately.
 
-Known distros: ubuntu:24.04, ubuntu:22.04, alpine:3.21, alpine:3.20
+Known distros: ubuntu:24.04, ubuntu:22.04, alpine:3.23
 
 You can also just reference the distro directly in nova.hcl and nova will
 pull it automatically on 'nova up':

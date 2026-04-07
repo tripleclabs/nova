@@ -26,7 +26,7 @@ func TestIntegration_SharedFolder_HostWriteGuestRead(t *testing.T) {
 	cluster := novatest.NewCluster(t, novatest.WithHCL(fmt.Sprintf(`
 		vm {
 			name   = "sf-host-write"
-			image  = "alpine:3.21"
+			image  = "alpine:3.23"
 			cpus   = 2
 			memory = "1G"
 
@@ -54,7 +54,7 @@ func TestIntegration_SharedFolder_GuestWriteHostRead(t *testing.T) {
 	cluster := novatest.NewCluster(t, novatest.WithHCL(fmt.Sprintf(`
 		vm {
 			name   = "sf-guest-write"
-			image  = "alpine:3.21"
+			image  = "alpine:3.23"
 			cpus   = 2
 			memory = "1G"
 
@@ -95,7 +95,7 @@ func TestIntegration_SharedFolder_ReadOnly(t *testing.T) {
 	cluster := novatest.NewCluster(t, novatest.WithHCL(fmt.Sprintf(`
 		vm {
 			name   = "sf-readonly"
-			image  = "alpine:3.21"
+			image  = "alpine:3.23"
 			cpus   = 2
 			memory = "1G"
 
@@ -141,7 +141,7 @@ func TestIntegration_SharedFolder_Multiple(t *testing.T) {
 	cluster := novatest.NewCluster(t, novatest.WithHCL(fmt.Sprintf(`
 		vm {
 			name   = "sf-multi"
-			image  = "alpine:3.21"
+			image  = "alpine:3.23"
 			cpus   = 2
 			memory = "1G"
 
