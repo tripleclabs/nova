@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 	pb "github.com/tripleclabs/nova/pkg/novapb/nova/v1"
@@ -66,6 +68,25 @@ func runExport(cmd *cobra.Command, args []string) error {
 			}
 		}
 
+		// Resolve the output path against the client's cwd — the daemon runs in
+		// its own working directory, so relative paths would otherwise land
+		// wherever the daemon was launched from, not where the user ran `nova export`.
+		outputPath := exportOutput
+		if outputPath == "" {
+			ext := "." + exportFormat
+			if exportFormat == "ova" {
+				ext = ".ova"
+			}
+			outputPath = name + ext
+		}
+		if !filepath.IsAbs(outputPath) {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("resolving output path: %w", err)
+			}
+			outputPath = filepath.Join(cwd, outputPath)
+		}
+
 		// Subscribe to events BEFORE calling Export so no progress is missed.
 		evtCtx, evtCancel := context.WithCancel(ctx)
 		defer evtCancel()
@@ -93,7 +114,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 		resp, exportErr := client.Export(ctx, &pb.ExportRequest{
 			Name:          name,
 			Format:        exportFormat,
-			OutputPath:    exportOutput,
+			OutputPath:    outputPath,
 			NoClean:       exportNoClean,
 			ZeroFreeSpace: exportZero,
 			SnapshotName:  exportSnapshot,

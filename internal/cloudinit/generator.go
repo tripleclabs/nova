@@ -172,6 +172,10 @@ func Generate(cfg GeneratorConfig) ([]byte, error) {
 		"mkdir -p /etc/ssh/sshd_config.d",
 		"grep -qxF 'Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config || echo 'Include /etc/ssh/sshd_config.d/*.conf' >> /etc/ssh/sshd_config",
 		"systemctl reload sshd 2>/dev/null || rc-service sshd reload 2>/dev/null || true",
+		// Zero out GRUB's interactive boot-menu timeout so the VM boots straight
+		// into the kernel. Best-effort: silently noops on distros that don't use
+		// GRUB (e.g. Alpine with syslinux/extlinux).
+		"if [ -f /etc/default/grub ]; then sed -i -E 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' /etc/default/grub; grep -q '^GRUB_TIMEOUT=' /etc/default/grub || echo 'GRUB_TIMEOUT=0' >> /etc/default/grub; (command -v update-grub >/dev/null && update-grub) || (command -v grub-mkconfig >/dev/null && grub-mkconfig -o /boot/grub/grub.cfg) || (command -v grub2-mkconfig >/dev/null && grub2-mkconfig -o /boot/grub2/grub.cfg) || true; fi",
 	}
 	if existing, ok := defaults["runcmd"].([]any); ok {
 		defaults["runcmd"] = append(existing, sshdCmds...)

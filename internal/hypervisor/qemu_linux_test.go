@@ -146,15 +146,29 @@ func TestBuildArgs_Memory(t *testing.T) {
 
 func TestBuildArgs_Disk(t *testing.T) {
 	args := baseEngine().buildArgs()
-	drive := argValue(args, "-drive")
-	if !strings.Contains(drive, "file=/var/lib/nova/test.qcow2") {
-		t.Errorf("-drive %q: missing disk path", drive)
+	var diskDrive, diskDev string
+	for i, a := range args {
+		if a == "-drive" && i+1 < len(args) && strings.Contains(args[i+1], "id=disk0") {
+			diskDrive = args[i+1]
+		}
+		if a == "-device" && i+1 < len(args) && strings.Contains(args[i+1], "virtio-blk-pci") {
+			diskDev = args[i+1]
+		}
 	}
-	if !strings.Contains(drive, "format=qcow2") {
-		t.Errorf("-drive %q: missing format=qcow2", drive)
+	if !strings.Contains(diskDrive, "file=/var/lib/nova/test.qcow2") {
+		t.Errorf("-drive %q: missing disk path", diskDrive)
 	}
-	if !strings.Contains(drive, "if=virtio") {
-		t.Errorf("-drive %q: missing if=virtio", drive)
+	if !strings.Contains(diskDrive, "format=qcow2") {
+		t.Errorf("-drive %q: missing format=qcow2", diskDrive)
+	}
+	if !strings.Contains(diskDrive, "if=none") {
+		t.Errorf("-drive %q: missing if=none", diskDrive)
+	}
+	if !strings.Contains(diskDev, "drive=disk0") {
+		t.Errorf("-device %q: missing drive=disk0", diskDev)
+	}
+	if !strings.Contains(diskDev, "bootindex=1") {
+		t.Errorf("-device %q: missing bootindex=1 (required to skip PXE)", diskDev)
 	}
 }
 
@@ -234,12 +248,17 @@ func TestBuildArgs_NoPortForwards(t *testing.T) {
 
 func TestBuildArgs_VirtioNet(t *testing.T) {
 	args := baseEngine().buildArgs()
-	dev := argValue(args, "-device")
-	if !strings.Contains(dev, "virtio-net-pci") {
-		t.Errorf("-device %q: missing virtio-net-pci", dev)
+	var netDev string
+	for i, a := range args {
+		if a == "-device" && i+1 < len(args) && strings.Contains(args[i+1], "virtio-net-pci") {
+			netDev = args[i+1]
+		}
 	}
-	if !strings.Contains(dev, "netdev=net0") {
-		t.Errorf("-device %q: missing netdev=net0", dev)
+	if netDev == "" {
+		t.Fatal("virtio-net-pci device not found")
+	}
+	if !strings.Contains(netDev, "netdev=net0") {
+		t.Errorf("-device %q: missing netdev=net0", netDev)
 	}
 }
 

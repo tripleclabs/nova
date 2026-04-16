@@ -340,7 +340,8 @@ func (e *qemuEngine) buildArgs() []string {
 		"-cpu", "host",
 		"-smp", fmt.Sprintf("%d", cfg.CPUs),
 		"-m", fmt.Sprintf("%d", cfg.MemoryMB),
-		"-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio", cfg.DiskPath),
+		"-drive", fmt.Sprintf("file=%s,format=qcow2,if=none,id=disk0", cfg.DiskPath),
+		"-device", "virtio-blk-pci,drive=disk0,bootindex=1",
 	}
 
 	// UEFI firmware: unit 0 = read-only code image, unit 1 = per-VM writable vars.

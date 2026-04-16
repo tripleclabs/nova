@@ -1128,7 +1128,7 @@ user {
 	if err == nil {
 		t.Fatal("expected error for user with no auth method")
 	}
-	if !strings.Contains(err.Error(), "ssh_key or password_hash") {
+	if !strings.Contains(err.Error(), "ssh_key, password, or password_hash") {
 		t.Errorf("error = %q, should mention auth methods", err)
 	}
 }

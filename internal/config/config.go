@@ -492,8 +492,8 @@ func validateUser(u *User) error {
 	if u.Name == "root" {
 		return fmt.Errorf("user name \"root\" is not allowed")
 	}
-	if u.SSHKey == "" && u.PasswordHash == "" {
-		return fmt.Errorf("user must have at least one of ssh_key or password_hash")
+	if u.SSHKey == "" && u.Password == "" && u.PasswordHash == "" {
+		return fmt.Errorf("user must have at least one of ssh_key, password, or password_hash")
 	}
 	if u.PasswordHash != "" && !looksLikeCryptHash(u.PasswordHash) {
 		return fmt.Errorf("password_hash does not look like a crypt(3) hash — use mkpasswd to generate one, not a plaintext password")
